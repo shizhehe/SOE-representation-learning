@@ -1,5 +1,6 @@
 import os
 import glob
+import sys
 import time
 import torch
 import torch.optim as optim
@@ -12,8 +13,11 @@ from util import *
 
 import h5py
 
-#phase = 'train'
-phase = 'evaluate'
+LOCAL = True
+DEBUG = True
+
+phase = 'train'
+#phase = 'evaluate'
 
 # set seed
 seed = 10
@@ -25,11 +29,15 @@ torch.backends.cudnn.deterministic=True
 # cuda
 cuda = 0
 device = torch.device('cuda:'+ str(cuda))
+
+if LOCAL:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 froze_encoder = False
 
 # model setting
 model_name = 'CLS'  
-latent_size = 1024
+latent_size = 512
 use_feature = ['z', 'delta_z']
 
 pos_weight = [1]
@@ -50,13 +58,18 @@ data_path = '/scratch/users/shizhehe/ADNI/'
 img_file_name = 'ADNI_longitudinal_img.h5'
 noimg_file_name = 'ADNI_longitudinal_noimg.h5'
 subj_list_postfix = 'NC_AD_pMCI_sMCI'
+if LOCAL:
+    data_path = '/Users/shizhehe/dev/research/vector_neurons_mri/ADNI'
 
 # time
 localtime = time.localtime(time.time())
 time_label = str(localtime.tm_year) + '_' + str(localtime.tm_mon) + '_' + str(localtime.tm_mday) + '_' + str(localtime.tm_hour) + '_' + str(localtime.tm_min)
 
 # checkpoints
-ckpt_path = os.path.join('/scratch/users/shizhehe/ADNI/ckpt/', dataset_name, model_name, time_label)
+ckpt_folder = '/scratch/users/shizhehe/ADNI/ckpt/'
+if LOCAL:
+    ckpt_folder = '/Users/shizhehe/dev/research/vector_neurons_mri/ADNI/ckpt/'
+ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, time_label)
 if not os.path.exists(ckpt_path):
     os.makedirs(ckpt_path)
 
@@ -74,10 +87,15 @@ trainDataLoader = Data.trainLoader
 valDataLoader = Data.valLoader
 testDataLoader = Data.testLoader
 
+sys.exit()
+
 print("Data loaded!!!")
 
 # define model
-model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=device).to(device)
+if LOCAL:
+    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=None).to(device)
+else:
+    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=device).to(device)
 
 print("Model set!!!")
 
@@ -101,8 +119,6 @@ def train():
     global_iter = 0
     monitor_metric_best = -1
     start_time = time.time()
-
-    debug = False
     
     # iterate through epochs
     for epoch in range(start_epoch + 1, epochs):
@@ -128,7 +144,7 @@ def train():
                 label = sample['label'].to(device, dtype=torch.float)
 
             # if remainder of data isn't enough for batch
-            if debug:
+            if DEBUG:
                 print(f"Input batch shape: {img1.shape}")
                 print(f'Size: {img1.shape[0]}, batch_size: {batch_size}')
             if img1.shape[0] <= batch_size // 2:
@@ -138,13 +154,15 @@ def train():
             # run model
             pred, z1 = model.forward_single(img1)
 
-            if debug:
+            if DEBUG:
                 print(f'Prediction sample: {pred}')
-                print(f'Pred type: {type(pred)}')
+                print(f'Label sample: {label}')
+
+                print(f'Size of input: {img1.shape}, size of label: {label.shape}, size of prediction {pred.shape}')
 
             loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
 
-            if debug:
+            if DEBUG:
                 print(f'Sample loss: {loss_cls}')
 
             #loss = config['lambda_cls'] * loss_cls
@@ -154,7 +172,7 @@ def train():
             pred_list.append(pred_sig.detach().cpu().numpy())
             label_list.append(label.detach().cpu().numpy())
 
-            if debug:
+            if DEBUG:
                 print(pred_list)
 
             loss.backward()
