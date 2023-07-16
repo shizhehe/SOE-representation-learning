@@ -57,9 +57,10 @@ dataset_name = 'ADNI'
 data_path = '/scratch/users/shizhehe/ADNI/'
 img_file_name = 'ADNI_longitudinal_img.h5'
 noimg_file_name = 'ADNI_longitudinal_noimg.h5'
-subj_list_postfix = 'NC_AD_pMCI_sMCI'
+#subj_list_postfix = 'NC_AD_pMCI_sMCI'
+subj_list_postfix = 'NC_AD'
 if LOCAL:
-    data_path = '/Users/shizhehe/dev/research/vector_neurons_mri/ADNI'
+    data_path = '/Users/he/code/vector_neurons_mri/ADNI'
 
 # time
 localtime = time.localtime(time.time())
@@ -68,7 +69,7 @@ time_label = str(localtime.tm_year) + '_' + str(localtime.tm_mon) + '_' + str(lo
 # checkpoints
 ckpt_folder = '/scratch/users/shizhehe/ADNI/ckpt/'
 if LOCAL:
-    ckpt_folder = '/Users/shizhehe/dev/research/vector_neurons_mri/ADNI/ckpt/'
+    ckpt_folder = '/Users/he/code/vector_neurons_mri/ADNI/ckpt/'
 ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, time_label)
 if not os.path.exists(ckpt_path):
     os.makedirs(ckpt_path)
@@ -86,8 +87,6 @@ Data = LongitudinalData(dataset_name, data_path, img_file_name=img_file_name,
 trainDataLoader = Data.trainLoader
 valDataLoader = Data.valLoader
 testDataLoader = Data.testLoader
-
-sys.exit()
 
 print("Data loaded!!!")
 
@@ -110,7 +109,6 @@ optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4, amsgr
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-5)
 
 start_epoch = -1
-
 
 # ------- train -------
 def train():
@@ -136,7 +134,6 @@ def train():
             global_iter += 1
 
             img1 = sample['img'].to(device, dtype=torch.float).unsqueeze(1)
-            #img1 = img1.unsqueeze(-1) # error message gotten for sizes
 
             if subj_list_postfix == 'C_single':
                 label = sample['age'].to(device, dtype=torch.float)
@@ -153,6 +150,8 @@ def train():
 
             # run model
             pred, z1 = model.forward_single(img1)
+            #pred = pred.view(-1, 1)
+            #label = label.view(-1, 1)
 
             if DEBUG:
                 print(f'Prediction sample: {pred}')
@@ -203,6 +202,8 @@ def train():
         pred_list = np.concatenate(pred_list, axis=0)
         label_list = np.concatenate(label_list, axis=0)
         compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix)
+
+        sys.exit()
 
         # validation
         # pdb.set_trace()

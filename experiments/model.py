@@ -248,7 +248,8 @@ class CLS(nn.Module):
             # pdb.set_trace()
             if dataset_name == 'ADNI':
                 if  'NC_AD' in postfix:
-                    label = label / 2
+                    #label = label / 2
+                    label[label != 0] = 1
                 elif 'pMCI_sMCI' in postfix:
                     label = label - 3
             elif dataset_name == 'LAB':

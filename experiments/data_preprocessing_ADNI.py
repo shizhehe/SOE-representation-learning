@@ -17,6 +17,7 @@ np.random.seed(seed)
 # preprocess subject label and data
 csv_path_raw = '/home/groups/kpohl/t1_data/adni/ADNIMERGE.csv'  # label for each timepoint (CN, AD, Demantia, MCI, LMCI, EMCI)
 data_path = '/home/groups/kpohl/t1_data/adni/img_64_longitudinal/'
+csv_path_raw = '/Users/he/code/vector_neurons_mri/ADNI/other/ADNIMERGE.csv'
 df_raw = pd.read_csv(csv_path_raw, usecols=['PTID', 'DX_bl', 'DX', 'EXAMDATE', 'AGE'])
 
 
@@ -122,7 +123,7 @@ for subj_id in subj_data.keys():
     num_ts_ad += (label_all==2).sum()
 print('Number of timesteps, NC/MCI/AD:', num_ts_nc, num_ts_mci, num_ts_ad)
 print('Number of subject, NC/sMCI/pMCI/AD:', num_nc, num_smci, num_pmci, num_ad)
-
+"""
 # save subj_list_dict to npy
 np.save('/scratch/users/shizhehe/ADNI/ADNI_longitudinal_subj.npy', subj_list_dict)
 
@@ -180,7 +181,8 @@ if not os.path.exists(h5_img_path):
             img = (img - np.mean(img)) / np.std(img)
             subj_img.create_dataset(os.path.basename(img_path), data=img)
         print(i, subj_id)
-    f_img.close()"""
+    f_img.close()
+"""
 
 def augment_image(img, rotate, shift, flip):
     # pdb.set_trace()
@@ -193,7 +195,7 @@ def augment_image(img, rotate, shift, flip):
     return img
 
 # currently takes too long, time out - TBD
-"""h5_img_path = '/scratch/users/shizhehe/ADNI/ADNI_longitudinal_img_aug.h5'
+h5_img_path = '/scratch/users/shizhehe/ADNI/ADNI_longitudinal_img_aug.h5'
 aug_size = 10
 if not os.path.exists(h5_img_path):
     f_img = h5py.File(h5_img_path, 'a')
@@ -213,8 +215,8 @@ if not os.path.exists(h5_img_path):
             imgs = np.stack(imgs, 0)
             subj_img.create_dataset(os.path.basename(img_path), data=imgs)
         print(i, subj_id)
-    f_img.close()"""
-
+    f_img.close()
+"""
 def save_data_txt(path, subj_id_list, case_id_list):
     with open(path, 'w') as ft:
         for subj_id, case_id in zip(subj_id_list, case_id_list):
@@ -260,11 +262,11 @@ def get_subj_single_case_id_list(subj_data, subj_id_list):
  
 #pdb.set_trace()
 #subj_list_postfix = 'NC_AD_pMCI_sMCI'
-subj_list_postfix = 'NC_AD_pMCI_sMCI_single'
+#subj_list_postfix = 'NC_AD_pMCI_sMCI_single'
 # subj_list_postfix = 'NC_AD_pMCI_sMCI_far'
-# subj_list_postfix = 'NC_AD'
+subj_list_postfix = 'NC_AD_single'
 # subj_list_postfix = 'pMCI_sMCI'
-subj_id_all = np.load('/scratch/users/shizhehe/ADNI/ADNI_longitudinal_subj.npy', allow_pickle=True).item()
+subj_id_all = np.load('/Users/he/code/vector_neurons_mri/ADNI/ADNI_longitudinal_subj.npy', allow_pickle=True).item()
 
 subj_list = []
 subj_test_list = []

@@ -2,6 +2,8 @@ ADNI/
 longitudinal-neighbourhood-embedding/
 vnn/
 .DS_Store
+.venv/
+test.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
