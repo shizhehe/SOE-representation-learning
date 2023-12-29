@@ -1,0 +1,74 @@
+wandb_version: 1
+
+model_name:
+  desc: null
+  value: ADNI/ckpt/ADNI/VN_Net/week14/pretext/VN_Net_fold_0_fixed_large_normalized
+mode:
+  desc: null
+  value: val
+train_mode:
+  desc: null
+  value: pretext
+week:
+  desc: null
+  value: 14
+fold:
+  desc: null
+  value: 0
+model_params:
+  desc: null
+  value: 282867
+architecture:
+  desc: null
+  value: VN_Net
+learning_rate:
+  desc: null
+  value: 0.01
+data_subset:
+  desc: null
+  value: NC_AD
+epochs:
+  desc: null
+  value: 100
+batch_size:
+  desc: null
+  value: 32
+rotations:
+  desc: null
+  value:
+  - 90
+  - 180
+  - 270
+notes:
+  desc: null
+  value: shorter training, correct loss normalization and range rotations, training
+    with all samples, matrix normalization before loss computation
+_wandb:
+  desc: null
+  value:
+    python_version: 3.9.16
+    cli_version: 0.15.12
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1699649210.825299
+    t:
+      1:
+      - 1
+      - 5
+      - 53
+      - 55
+      2:
+      - 1
+      - 5
+      - 53
+      - 55
+      3:
+      - 16
+      - 23
+      4: 3.9.16
+      5: 0.15.12
+      8:
+      - 4
+      - 5
+      13: darwin-arm64

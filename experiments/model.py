@@ -248,8 +248,8 @@ class CLS(nn.Module):
             # pdb.set_trace()
             if dataset_name == 'ADNI':
                 if  'NC_AD' in postfix:
-                    #label = label / 2
-                    label[label != 0] = 1
+                    label = label / 2
+                    #label[label != 0] = 1 # anything not NC is 1
                 elif 'pMCI_sMCI' in postfix:
                     label = label - 3
             elif dataset_name == 'LAB':
@@ -258,61 +258,10 @@ class CLS(nn.Module):
             elif dataset_name == 'NCANDA':
                 label = (label > 0).double()
             else:
-                raise ValueError('Not support!')
+                raise ValueError('Not supported!')
             loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
             return loss, F.sigmoid(pred)
 
-class AE(nn.Module):
-    def __init__(self):
-        super(AE, self).__init__()
-        self.encoder = Encoder(in_num_ch=1, inter_num_ch=16, num_conv=1)
-        self.decoder = Decoder(out_num_ch=1, inter_num_ch=16, num_conv=1)
-
-    def forward(self, img1, img2, interval):
-        bs = img1.shape[0]
-        zs = self.encoder(torch.cat([img1, img2], 0))
-        recons = self.decoder(zs)
-        zs_flatten = zs.view(bs*2, -1)
-        z1, z2 = zs_flatten[:bs], zs_flatten[bs:]
-        recon1, recon2 = recons[:bs], recons[bs:]
-        return [z1, z2], [recon1, recon2]
-
-    # reconstruction loss
-    def compute_recon_loss(self, x, recon):
-        return torch.mean((x - recon) ** 2)
-
-class VAE(nn.Module):
-    def __init__(self):
-        super(VAE, self).__init__()
-        self.encoder = Encoder_Var(in_num_ch=1, inter_num_ch=16, num_conv=1)
-        self.decoder = Decoder(out_num_ch=1, inter_num_ch=16, num_conv=1)
-
-    def forward(self, img1, img2, interval):
-        bs = img1.shape[0]
-        zs_mu, zs_logvar = self.encoder(torch.cat([img1, img2], 0))
-        zs = self._sample(zs_mu, zs_logvar)
-        recons = self.decoder(zs)
-        zs_flatten = zs.view(bs*2, -1)
-        z1, z2 = zs_flatten[:bs], zs_flatten[bs:]
-        recon1, recon2 = recons[:bs], recons[bs:]
-        return [z1, z2, zs_mu.view(bs*2, -1), zs_logvar.view(bs*2, -1)], [recon1, recon2]
-
-    def _sample(self, mu, logvar):
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            return eps * std + mu
-        else:
-            return mu
-
-    # reconstruction loss
-    def compute_recon_loss(self, x, recon):
-        return torch.mean((x - recon) ** 2)
-
-    # kl loss
-    def compute_kl_loss(self, mu, logvar):
-        kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-        return torch.mean(torch.sum(kl, dim=-1))
 
 class LSSL(nn.Module):
     def __init__(self, gpu='None'):

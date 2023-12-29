@@ -1,168 +1,168 @@
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
-from scipy import special
-from scipy.ndimage import affine_transform
-import itertools
-
-from scipy.ndimage import _ni_support
-
-
-"""
-Closely implemented from implementation of rotate from scipy.ndimage
-"""
-
-def generate_rotation_matrix(angle):
-    c, s = special.cosdg(angle), special.sindg(angle)
-    return np.array([[c, s], [-s, c]])
+import torch
+from torch.nn import Linear
+from torch.nn.functional import relu
 
 
-def rotate_custom(input, rot_matrix, axes=(1, 0), reshape=True, output=None, order=3,
-           mode='constant', cval=0.0, prefilter=True, verbose=False):
-    input_arr = np.asarray(input)
-    ndim = input_arr.ndim
-    axes = list(axes)
+def trilinear_interpolation(volume, coordinates, device):
+    D, H, W = volume.shape
+    x = coordinates[..., 0]
+    y = coordinates[..., 1]
+    z = coordinates[..., 2]
+    x0, x1 = torch.floor(x).long(), torch.ceil(x).long()
+    y0, y1 = torch.floor(y).long(), torch.ceil(y).long()
+    z0, z1 = torch.floor(z).long(), torch.ceil(z).long()
+    x0, y0, z0 = torch.clamp(x0, 0, W-1), torch.clamp(y0, 0, H-1), torch.clamp(z0, 0, D-1)
+    x1, y1, z1 = torch.clamp(x1, 0, W-1), torch.clamp(y1, 0, H-1), torch.clamp(z1, 0, D-1)
 
-    # some safe checks
-    if ndim < 2:
-        print('Danger! input array should be at least 2D')
-        input_arr = np.expand_dims(input_arr, axis=0)
-    if len(axes) != 2:
-        raise ValueError('axes should contain exactly two values')
-    if not all([float(ax).is_integer() for ax in axes]):
-        raise ValueError('axes should contain only integer values')
-    
-    # safe guard for negative axes for reverse indexing
-    if axes[0] < 0:
-        axes[0] += ndim
-    if axes[1] < 0:
-        axes[1] += ndim
-    if axes[0] < 0 or axes[1] < 0 or axes[0] >= ndim or axes[1] >= ndim:
-        raise ValueError('invalid rotation plane specified')
-    axes.sort()
+    c000 = volume[z0, y0, x0]
+    c001 = volume[z0, y0, x1]
+    c010 = volume[z0, y1, x0]
+    c011 = volume[z0, y1, x1]
+    c100 = volume[z1, y0, x0]
+    c101 = volume[z1, y0, x1]
+    c110 = volume[z1, y1, x0]
+    c111 = volume[z1, y1, x1]
 
+    xd, yd, zd = x - x0.float(), y - y0.float(), z - z0.float()
+    c00 = c000 * (1 - xd) + c001 * xd
+    c01 = c010 * (1 - xd) + c011 * xd
+    c10 = c100 * (1 - xd) + c101 * xd
+    c11 = c110 * (1 - xd) + c111 * xd
 
-    img_shape = np.asarray(input_arr.shape)
-    in_plane_shape = img_shape[axes]
+    c0 = c00 * (1 - yd) + c01 * yd
+    c1 = c10 * (1 - yd) + c11 * yd
 
-
-    if reshape:
-        # Compute transformed input bounds
-        iy, ix = in_plane_shape
-        out_bounds = rot_matrix @ [[0, 0, iy, iy],
-                                   [0, ix, 0, ix]]
-        # Compute the shape of the transformed input plane
-        out_plane_shape = (out_bounds.ptp(axis=1) + 0.5).astype(int)
-    else:
-        out_plane_shape = img_shape[axes]
+    c = c0 * (1 - zd) + c1 * zd
+    return c.view(D, H, W)
 
 
-    out_center = rot_matrix @ ((out_plane_shape - 1) / 2)
-    in_center = (in_plane_shape - 1) / 2
-    offset = in_center - out_center
+def generate_rotation_matrix(axis, angle, device, mode='torch'):
+    """
+    Generates a 3x3 rotation matrix
 
-    output_shape = img_shape
-    output_shape[axes] = out_plane_shape
-    output_shape = tuple(output_shape)
-    
-    if verbose:
-        print(f'Output Shape: {output_shape}')
+    :param axis: A 3D list representing the axis of rotation.
+    :param angle: The angle of rotation in degrees.
+    :return: A 3x3 tensor representing the rotation matrix.
+    """
+    if mode == 'torch':
+        axis = torch.tensor(axis, dtype=torch.float)
 
-    output = np.zeros(output_shape, dtype=input_arr.dtype.name)
-    #complex_output = np.iscomplexobj(input_arr)
-    #output = _ni_support._get_output(output, input_arr, shape=output_shape,
-    #                                 complex_output=complex_output)
+        degrees = torch.tensor(angle, dtype=torch.float)
+        angle = torch.deg2rad(degrees)
 
-    if ndim == 2:
-        affine_transform(input_arr, rot_matrix, offset, output_shape, output,
-                         order, mode, cval, prefilter)
-    else:
-        # If ndim > 2, the rotation is applied over all the planes
-        # parallel to axes
-        planes_coord = itertools.product(
-            *[[slice(None)] if ax in axes else range(img_shape[ax])
-              for ax in range(ndim)])
+        axis = axis / torch.norm(axis) # normalize to unit vector
         
-
-        out_plane_shape = tuple(out_plane_shape)
-
-        for coordinates in planes_coord:            
-            ia = input_arr[coordinates]
-            oa = output[coordinates]
-
-            affine_transform(ia, rot_matrix, offset, out_plane_shape,
-                             oa, order, mode, cval, prefilter)
-    return output
-
-def rotate_custom_angle(input, angle, axes=(1, 0), reshape=True, output=None, order=3,
-           mode='constant', cval=0.0, prefilter=True, verbose=False):
-    input_arr = np.asarray(input)
-    ndim = input_arr.ndim
-
-    if ndim < 2:
-        raise ValueError('input array should be at least 2D')
-
-    axes = list(axes)
-
-    if len(axes) != 2:
-        raise ValueError('axes should contain exactly two values')
-
-    if not all([float(ax).is_integer() for ax in axes]):
-        raise ValueError('axes should contain only integer values')
-
-    if axes[0] < 0:
-        axes[0] += ndim
-    if axes[1] < 0:
-        axes[1] += ndim
-    if axes[0] < 0 or axes[1] < 0 or axes[0] >= ndim or axes[1] >= ndim:
-        raise ValueError('invalid rotation plane specified')
-
-    axes.sort()
-
-    c, s = special.cosdg(angle), special.sindg(angle)
-
-    rot_matrix = np.array([[c, s],
-                              [-s, c]])
-
-    img_shape = np.asarray(input_arr.shape)
-    in_plane_shape = img_shape[axes]
-    if reshape:
-        # Compute transformed input bounds
-        iy, ix = in_plane_shape
-        out_bounds = rot_matrix @ [[0, 0, iy, iy],
-                                   [0, ix, 0, ix]]
-        # Compute the shape of the transformed input plane
-        out_plane_shape = (out_bounds.ptp(axis=1) + 0.5).astype(int)
+        a = torch.cos(angle / 2)
+        b, c, d = -axis * torch.sin(angle / 2)
+        aa, bb, cc, dd = a * a, b * b, c * c, d * d
+        bc, ad, ac, ab, bd, cd = b * c, a * d, a * c, a * b, b * d, c * d
+        return torch.tensor([[aa + bb - cc - dd, 2 * (bc + ad), 2 * (bd - ac)],
+                            [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab)],
+                            [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc]])#.to(device, dtype=torch.float)
+    elif mode == 'scipy':
+        angle = angle * np.pi / 180
+        
+        rotation = R.from_rotvec(angle * np.array(axis))
+        return torch.tensor(rotation.as_matrix(), dtype=torch.float64)#.to(device, dtype=torch.float)
     else:
-        out_plane_shape = img_shape[axes]
+        raise ValueError('Invalid mode: {}'.format(mode))
 
-    out_center = rot_matrix @ ((out_plane_shape - 1) / 2)
-    in_center = (in_plane_shape - 1) / 2
-    offset = in_center - out_center
 
-    output_shape = img_shape
-    output_shape[axes] = out_plane_shape
-    output_shape = tuple(output_shape)
+def rotate_volume(volume, rotation_matrix, device, mode='trilinear'):
+    # Get the shape of the voxel grid
+    D, H, W = volume.shape
 
-    complex_output = np.iscomplexobj(input_arr)
-    output = _ni_support._get_output(output, input_arr, shape=output_shape,
-                                     complex_output=complex_output)
+    # Create a grid of 3D coordinates
+    z, y, x = torch.meshgrid(torch.arange(D), torch.arange(H), torch.arange(W))
+    z, y, x = z.float(), y.float(), x.float()
+    #z, y, x = z.to(torch.float64), y.to(torch.float64), x.to(torch.float64)
+    coordinates = torch.stack([x, y, z], dim=-1) # Shape: [D, H, W, 3]
 
-    if ndim <= 2:
-        affine_transform(input_arr, rot_matrix, offset, output_shape, output,
-                         order, mode, cval, prefilter)
+    # Center the coordinates around 0
+    coordinates -= torch.tensor([W // 2, H // 2, D // 2], dtype=torch.float64, requires_grad=True)
+
+    # Apply the rotation matrix
+    #rotated_coordinates = coordinates @ rotation_matrix
+    rotated_coordinates = torch.einsum('ij,dhwj->dhwi', rotation_matrix, coordinates)
+
+    # Translate the coordinates back to the original range
+    rotated_coordinates += torch.tensor([W // 2, H // 2, D // 2], dtype=torch.float64, requires_grad=True)
+
+    # Clamp the coordinates to be within the valid range
+    rotated_coordinates = torch.clamp(rotated_coordinates, 0, min(D-1, H-1, W-1))
+
+    if mode == 'nearest':
+        # Create coordinates for gathering
+        coordinates = rotated_coordinates.long().unbind(-1)
+        # Perform gather operation to get the rotated volume
+        rotated_volume = volume[coordinates[2], coordinates[1], coordinates[0]].view(D, H, W)
+    elif mode == 'trilinear':
+        volume = volume.to('cpu', dtype=torch.float)
+        rotated_coordinates = rotated_coordinates.to('cpu', dtype=torch.float)
+        rotated_volume = trilinear_interpolation(volume, rotated_coordinates, device)
     else:
-        # If ndim > 2, the rotation is applied over all the planes
-        # parallel to axes
-        planes_coord = itertools.product(
-            *[[slice(None)] if ax in axes else range(img_shape[ax])
-              for ax in range(ndim)])
+        raise ValueError('Invalid mode: {}'.format(mode))
 
-        out_plane_shape = tuple(out_plane_shape)
+    return rotated_volume
 
-        for coordinates in planes_coord:
-            ia = input_arr[coordinates]
-            oa = output[coordinates]
-            affine_transform(ia, rot_matrix, offset, out_plane_shape,
-                             oa, order, mode, cval, prefilter)
+def normalize_volume(initial_volume, rotated_valume):
+    initial_min = initial_volume.min()
+    initial_max = initial_volume.max()
 
-    return output
+    normalized_volume = (rotated_valume - rotated_valume.min()) / (rotated_valume.max() - rotated_valume.min())
+    normalized_volume = normalized_volume * (initial_max - initial_min) + initial_min
+
+    return normalized_volume
+
+def rotate_volume_cuda(volume, rotation_matrix, device, mode='trilinear'):
+    # Get the shape of the voxel grid
+    D, H, W = volume.shape
+
+    # Create a grid of 3D coordinates
+    z, y, x = torch.meshgrid(torch.arange(D), torch.arange(H), torch.arange(W))
+    z, y, x = z.float(), y.float(), x.float()
+    #z, y, x = z.to(torch.float64), y.to(torch.float64), x.to(torch.float64)
+    coordinates = torch.stack([x, y, z], dim=-1).to(device, dtype=torch.float) # Shape: [D, H, W, 3]
+
+    # Center the coordinates around 0
+    coordinates -= torch.tensor([W // 2, H // 2, D // 2], dtype=torch.float64, requires_grad=True).to(device, dtype=torch.float)
+
+    # Apply the rotation matrix
+    #rotated_coordinates = coordinates @ rotation_matrix
+    rotated_coordinates = torch.einsum('ij,dhwj->dhwi', rotation_matrix, coordinates)
+
+    # Translate the coordinates back to the original range
+    rotated_coordinates += torch.tensor([W // 2, H // 2, D // 2], dtype=torch.float64, requires_grad=True).to(device, dtype=torch.float)
+
+    # Clamp the coordinates to be within the valid range
+    rotated_coordinates = torch.clamp(rotated_coordinates, 0, min(D-1, H-1, W-1))
+
+    # Gather the voxel values at the rotated coordinates
+    #rotated_volume = torch.zeros_like(volume, requires_grad=True)
+    #for d in range(D):
+    #    for h in range(H):
+    #        for w in range(W):
+    #            x_, y_, z_ = rotated_coordinates[d, h, w].long()
+    #            rotated_volume[d, h, w] = volume[z_, y_, x_]
+
+    if mode == 'nearest':
+        # Create coordinates for gathering
+        coordinates = rotated_coordinates.long().unbind(-1)
+        # Perform gather operation to get the rotated volume
+        rotated_volume = volume[coordinates[2], coordinates[1], coordinates[0]].view(D, H, W)
+    elif mode == 'trilinear':
+        rotated_volume = trilinear_interpolation(volume, rotated_coordinates, device)
+    else:
+        raise ValueError('Invalid mode: {}'.format(mode))
+
+    return rotated_volume
+
+
+def apply_matmul(vector_neuron, rotation_matrix):
+    if vector_neuron.shape[-1] != 3:
+        raise ValueError('vector_neuron must have shape (..., 3)')
+    #return vector_neuron @ rotation_matrix
+    return torch.matmul(vector_neuron, rotation_matrix)

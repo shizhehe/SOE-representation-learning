@@ -59,12 +59,15 @@ class CrossSectionalDataset(Dataset):
             label = np.array(self.data_noimg[subj_id]['label_all'][case_order])
         else:
             label = np.array(self.data_noimg[subj_id]['label'])
+        mean_age = np.array(self.data_noimg[subj_id]['mean_age'])
+        std_age = np.array(self.data_noimg[subj_id]['std_age'])
         age = np.array(self.data_noimg[subj_id]['age'] + self.data_noimg[subj_id]['date_interval'][case_order])
         if self.dataset_name == 'LAB':
             age = (age - 47.3) / 17.6
         if self.dataset_name == 'NCANDA':
             age = (age - 19.5) / 3.4
-        return {'img': img, 'label': label, 'age': age}
+        # TODO: move age normalization to data loading pipeline from data preprocessing
+        return {'img': img, 'label': label, 'age': age, 'mean_age': mean_age, 'std_age': std_age}
 
 class LongitudinalPairDataset(Dataset):
     def __init__(self, dataset_name, data_img, data_noimg, subj_id_list, case_id_list, aug=False, is_label_tp=False):
@@ -274,8 +277,8 @@ def load_checkpoint_model(model, pretrained_dict):
     return model
 
 # save results statistics
-def save_result_stat(stat, config, info='Default'):
-    stat_path = os.path.join(config['ckpt_path'], 'stat.csv')
+def save_result_stat(stat, config, basename='stat.csv', info='Default'):
+    stat_path = os.path.join(config['ckpt_path'], basename)
     columns=['info',] + sorted(stat.keys())
     if not os.path.exists(stat_path):
         df = pd.DataFrame(columns=columns)
@@ -296,19 +299,23 @@ def save_checkpoint(state, is_best, checkpoint_dir):
         shutil.copyfile(filename, checkpoint_dir+'/model_best.pth.tar')
         print('save best')
 
-def compute_classification_metrics(label, pred, dataset_name='ADNI', postfix='NC_AD', task='classification'):
+def compute_classification_metrics(label, pred, dataset_name='ADNI', postfix='NC_AD', task='classification', std_age=None, mean_age=None):
     if task == 'age':
         r2 = sklearn.metrics.r2_score(label, pred)
+        if std_age is not None and mean_age is not None:
+            pred = pred * std_age[0].item() + mean_age[0].item()
+            label = label * std_age[0].item() + mean_age[0].item()
         if dataset_name == 'LAB':
             label = label * 17.6 + 47.3
             pred = pred * 17.6 + 47.3
         if dataset_name == 'NCANDA':
             label = label * 3.4 + 19.5
             pred = pred * 3.4 + 19.5
-        mse = sklearn.metrics.mean_squared_error(label, pred, squared=False)
-        mae = np.abs(pred - label).mean()
+        mse = sklearn.metrics.mean_squared_error(label, pred, squared=True)
+        mae = sklearn.metrics.mean_absolute_error(label, pred)
+        #mae = np.abs(pred - label).mean()
         print(mse, r2, mae)
-        return r2
+        return {'r2': r2, 'mse': mse, 'mae': mae}
     else:
         pred_bi = (pred>0.5).squeeze(1)
         if dataset_name == 'ADNI':
@@ -323,6 +330,14 @@ def compute_classification_metrics(label, pred, dataset_name='ADNI', postfix='NC
         elif dataset_name == 'NCANDA':
             label = (label > 0)
             classes = [0,1]
+
+        #classes = [0,1] # currently, we only consider binary classification of NC and others
+
+        print("Number of positive samples in label: ", np.sum(label==classes[1]))
+        print("Number of positive samples in pred: ", np.sum(pred_bi==1))
+        print("Number of negative samples in label: ", np.sum(label==classes[0]))
+        print("Number of negative samples in pred: ", np.sum(pred_bi==0))
+        
         tp = np.sum(np.logical_and(label==classes[1], pred_bi==1))
         fp = np.sum(np.logical_and(label==classes[0], pred_bi==1))
         tn = np.sum(np.logical_and(label==classes[0], pred_bi==0))
@@ -332,5 +347,7 @@ def compute_classification_metrics(label, pred, dataset_name='ADNI', postfix='NC
         spe = tn/(tn+fp)
         bacc = 0.5 * (sen + spe)
         acc = (tp+tn)/(tp+fp+fn+tn)
-        print(f"acc: {acc}, auc: {auc}, bacc: {bacc}, sen: {sen}, spe: {spe}")
-        return bacc
+        f1 = (tp)/(tp + 0.5*(fp+fn))
+        #acc = ((pred > 0.0) == label).float().mean()
+        print(f"acc: {acc}, auc: {auc}, bacc: {bacc}, sen: {sen}, spe: {spe}, f1: {f1}")
+        return {'bacc': bacc, 'f1': f1}

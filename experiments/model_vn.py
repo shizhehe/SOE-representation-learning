@@ -4,10 +4,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import math
-
+import sys
 import pdb
-
+from torchvision.ops.misc import MLP, Permute
+import torchvision
+from torchvision.models.swin_transformer import PatchMerging, _log_api_usage_once, SwinTransformerBlock
 import vn_layers
+from functools import partial
+from typing import Any, Callable, List, Optional
+
+
+from model import Encoder as EncoderBase
 
 
 class EncoderBlock(nn.Module):
@@ -16,8 +23,8 @@ class EncoderBlock(nn.Module):
         if conv_act == 'relu':
             conv_act_layer = nn.ReLU(inplace=True)
         elif conv_act == 'leaky_relu':
-            #conv_act_layer = nn.LeakyReLU(0.2, inplace=True)
-            conv_act_layer = vn_layers.VNLeakyReLU(in_num_ch, share_nonlinearity=True, negative_slope=0.2)
+            conv_act_layer = nn.LeakyReLU(0.2, inplace=True)
+            #conv_act_layer = vn_layers.VNLeakyReLU(out_num_ch, share_nonlinearity=True, negative_slope=0.2)
         else:
             raise ValueError('No implementation of ', conv_act)
 
@@ -37,6 +44,48 @@ class EncoderBlock(nn.Module):
                             nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
                             nn.BatchNorm3d(out_num_ch),
                             conv_act_layer,
+                            nn.Dropout3d(dropout),
+                            nn.MaxPool3d(2))
+        # abstract model size to num_conv
+        elif num_conv == 3:
+            self.conv = nn.Sequential(
+                            nn.Conv3d(in_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+                            
+                            nn.Dropout3d(dropout),
+                            nn.MaxPool3d(2))
+        elif num_conv == 4:
+            self.conv = nn.Sequential(
+                            nn.Conv3d(in_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+                            
                             nn.Dropout3d(dropout),
                             nn.MaxPool3d(2))
         else:
@@ -63,7 +112,7 @@ class DecoderBlock(nn.Module):
         if conv_act == 'relu':
             conv_act_layer = nn.ReLU(inplace=True)
         elif conv_act == 'leaky_relu':
-            conv_act_layer = vn_layers.VNLeakyReLU(in_num_ch, share_nonlinearity=True, negative_slope=0.2)
+            conv_act_layer = vn_layers.VNLeakyReLU(out_num_ch, share_nonlinearity=True, negative_slope=0.2)
         else:
             raise ValueError('No implementation of ', conv_act)
 
@@ -124,9 +173,10 @@ class Encoder_var(nn.Module):
         # (16,4,4,4)
         return mu.view(x.shape[0], -1), log_var.view(x.shape[0], -1)
 
-class Encoder(nn.Module):
-    def __init__(self, in_num_ch=1, img_size=(64,64,64), inter_num_ch=16, kernel_size=3, conv_act='leaky_relu', num_conv=2, dropout=False):
-        super(Encoder, self).__init__()
+class EncoderVN(nn.Module):
+    def __init__(self, in_num_ch=1, img_size=(64,64,64), inter_num_ch=16, kernel_size=3, conv_act='leaky_relu', num_conv=2, dropout=False, normalize_output=False):
+        super(EncoderVN, self).__init__()
+        self.normalize_output = normalize_output
 
         if dropout:
             self.conv1 = EncoderBlock(in_num_ch, inter_num_ch, kernel_size=kernel_size, conv_act=conv_act, dropout=0, num_conv=num_conv)
@@ -144,7 +194,10 @@ class Encoder(nn.Module):
         conv2 = self.conv2(conv1)
         conv3 = self.conv3(conv2)
         conv4 = self.conv4(conv3)
-        # (16,4,4,4)
+
+        # normalize the output so that scaling does not affect the loss
+        if self.normalize_output:
+            conv4 = conv4 / torch.norm(conv4, p='fro') # normalize such that L2 norm of each matrix is 1
         return conv4
 
 class Encoder_Var(nn.Module):
@@ -198,9 +251,10 @@ class Classifier(nn.Module):
                             nn.Dropout(0.5),
 
                             #nn.Linear(latent_size, inter_num_ch),
-                            #vn_layers.VNLinear(latent_size, inter_num_ch),
-                            #nn.LeakyReLU(0.2),
-                            vn_layers.VNLinearAndLeakyReLU(latent_size, inter_num_ch, negative_slope=0.2),
+                            vn_layers.VNLinear(latent_size, inter_num_ch),
+                            #vn_layers.VNLeakyReLU(inter_num_ch, negative_slope=0.2),
+                            nn.LeakyReLU(0.2),
+                            #vn_layers.VNLinearAndLeakyReLU(latent_size, inter_num_ch, negative_slope=0.2),
 
                             #nn.Linear(inter_num_ch, 1)
                             vn_layers.VNLinear(inter_num_ch, 1)
@@ -210,8 +264,10 @@ class Classifier(nn.Module):
                         nn.Dropout(0.2),
 
                         #nn.Linear(latent_size, inter_num_ch),
-                        #nn.LeakyReLU(0.2),
-                        vn_layers.VNLinearAndLeakyReLU(latent_size, inter_num_ch, negative_slope=0.2),
+                        vn_layers.VNLinear(latent_size, inter_num_ch),
+                        #vn_layers.VNLeakyReLU(inter_num_ch, negative_slope=0.2),
+                        nn.LeakyReLU(0.2),
+                        #vn_layers.VNLinearAndLeakyReLU(latent_size, inter_num_ch, negative_slope=0.2),
 
                         #nn.Linear(inter_num_ch, 1)
                         vn_layers.VNLinear(inter_num_ch, 1)
@@ -226,78 +282,30 @@ class Classifier(nn.Module):
     def forward(self, x):
         return self.fc(x)
 
-# relevant for self-supervised learning
-class VNN_Net(nn.Module):
-    def __init__(self, latent_size=1024, use_feature=['z', 'delta_z'], dropout=False, gpu=None):
-        super(VNN_Net, self).__init__()
-        self.gpu = gpu
-        self.use_feature = use_feature
-        self.encoder = Encoder(in_num_ch=1, inter_num_ch=16, num_conv=1, dropout=dropout)
+class VN_Module(nn.Module):
+    def __init__(self, latent_size=1024, inter_num_ch=64):
+        super(VN_Module, self).__init__()
+        self.fc = nn.Sequential(
+                    vn_layers.VNLinear(1, 3),
+                    #vn_layers.VNLeakyReLU(inter_num_ch, negative_slope=0.2),
+                    #vn_layers.VNBatchNorm(3),
+                )
+        self._init()
 
-    # can be replaced!
-    # used for paired inputs where you're interested in changes or differences between the pair - not relevant to us
-    # pairs are not used for classification itself, only for training
-    def forward(self, img1, img2, interval):
-        bs = img1.shape[0]
-        zs = self.encoder(torch.cat([img1, img2], 0))
-        zs_flatten = zs.view(bs*2, -1)
-        z1, z2 = zs_flatten[:bs], zs_flatten[bs:]
-        delta_z = (z2 - z1) / interval.unsqueeze(1)      # [bs, ls]
+    def _init(self):
+        for layer in self.fc.children():
+            if isinstance(layer, nn.Linear):
+                torch.nn.init.kaiming_normal_(layer.weight, a=0, mode='fan_in', nonlinearity='relu')
 
-        if len(self.use_feature) == 2:
-            input = torch.cat([z1, delta_z], 1)
-        elif 'z' in self.use_feature:
-            input = z1
-        else:
-            input = delta_z
-            
-        return input
-
-    # takes in just one image (img1), runs this image through the 
-    # encoder to get a latent representation (z1)
-    def forward_single(self, img1):
-        z1 = self.encoder(img1)
-        z1 = z1.view(img1.shape[0], -1) # don't need this, need this to flatten in order to pass into a FC Network, but could keep for consistency
-
-        return z1
-
-    def forward_pair(self, img1, img2):
-        z1 = self.encoder(img1)
-        z2 = self.encoder(img2)
-        # don't need this, need this to flatten in order to pass into a FC Network, but could keep for consistency
-        z1 = z1.view(img1.shape[0], -1)
-        z2 = z2.view(img2.shape[0], -1)
-
-        return z1, z2
-
-    def compute_classification_loss(self, pred, label, pos_weight=torch.tensor([2.]), dataset_name='ADNI', postfix='NC_AD', task='classification'):
-        if task == 'age':
-            loss = nn.MSELoss()(pred.squeeze(1), label)
-            return loss, pred
-        else:
-            # pdb.set_trace()
-            if dataset_name == 'ADNI':
-                if  'NC_AD' in postfix:
-                    label = label / 2
-                elif 'pMCI_sMCI' in postfix:
-                    label = label - 3
-            elif dataset_name == 'LAB':
-                if 'C_E_HE' in postfix:
-                    label = (label > 0).double()
-            elif dataset_name == 'NCANDA':
-                label = (label > 0).double()
-            else:
-                raise ValueError('Not support!')
-            loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
-            return loss, F.sigmoid(pred)
-
+    def forward(self, x):
+        return self.fc(x)
 
 class CLS(nn.Module):
-    def __init__(self, latent_size=1024, use_feature=['z', 'delta_z'], dropout=False, gpu=None):
+    def __init__(self, latent_size=1024, use_feature=['z', 'delta_z'], dropout=False, gpu=None, num_conv=1):
         super(CLS, self).__init__()
         self.gpu = gpu
         self.use_feature = use_feature
-        self.encoder = Encoder(in_num_ch=1, inter_num_ch=16, num_conv=1, dropout=dropout)
+        self.encoder = EncoderVN(in_num_ch=1, inter_num_ch=16, num_conv=num_conv, dropout=dropout, normalize_output=False)
         self.classifier = Classifier(latent_size=len(use_feature)*latent_size, inter_num_ch=64)
 
     def forward(self, img1, img2, interval):
@@ -331,6 +339,116 @@ class CLS(nn.Module):
             if dataset_name == 'ADNI':
                 if  'NC_AD' in postfix:
                     label = label / 2
+                    #label[label != 0] = 1 # anything not NC is 1
+                elif 'pMCI_sMCI' in postfix:
+                    label = label - 3
+            elif dataset_name == 'LAB':
+                if 'C_E_HE' in postfix:
+                    label = (label > 0).double()
+            elif dataset_name == 'NCANDA':
+                label = (label > 0).double()
+            else:
+                raise ValueError('Not supported!')
+            loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
+            return loss, F.sigmoid(pred)
+
+class VN_Net(nn.Module):
+    def __init__(self, latent_size=1024, use_feature=['z', 'delta_z'], num_conv=1, encoder='base', vn_module = False, dropout=False, gpu=None, normalize_output=False):
+        super(VN_Net, self).__init__()
+        self.gpu = gpu
+        self.use_feature = use_feature
+        self.vn_module = None
+        self.normalize_output = normalize_output
+
+        #if encoder == 'base':
+        #    self.encoder = EncoderBase(in_num_ch=1, inter_num_ch=16, num_conv=num_conv, dropout=dropout)
+        #elif encoder == 'vn':
+        if encoder == 'base':
+            self.encoder = EncoderVN(in_num_ch=1, inter_num_ch=16, num_conv=num_conv, dropout=dropout, normalize_output=normalize_output)
+        elif encoder == 'ViT':
+            #self.encoder = torchvision.models.vit_b_16(weights=None, image_size=64)
+            # https://github.com/junyuchen245/ViT-V-Net_for_3D_Image_Registration_Pytorch
+            pass
+        elif encoder == 'SWIN':
+            # ISSUE: have to change the input size to 64x64x64, not 224x224x3!!
+            # https://github.com/microsoft/Swin3D
+            #self.encoder = SwinTransformer(
+            #    patch_size=[4, 4],
+            #    embed_dim=128,
+            #    depths=[2, 2, 18, 2],
+            #    num_heads=[4, 8, 16, 32],
+            #    window_size=[7, 7],
+            #    stochastic_depth_prob=0.5,
+            #    image_size=64
+            #)
+            pass
+
+        if vn_module:
+            self.vn_module = VN_Module(latent_size=latent_size, inter_num_ch=64)
+
+        self.classifier = Classifier(latent_size=len(use_feature)*latent_size, inter_num_ch=64)
+
+    def forward(self, img1, img2, interval):
+        bs = img1.shape[0]
+        zs = self.encoder(torch.cat([img1, img2], 0))
+        zs_flatten = zs.view(bs*2, -1)
+        z1, z2 = zs_flatten[:bs], zs_flatten[bs:]
+        delta_z = (z2 - z1) / interval.unsqueeze(1)      # [bs, ls]
+
+        if len(self.use_feature) == 2:
+            input = torch.cat([z1, delta_z], 1)
+        elif 'z' in self.use_feature:
+            input = z1
+        else:
+            input = delta_z
+        pred = self.classifier(input)
+        return pred
+
+    def forward_single(self, img1):
+        z1 = self.encoder(img1)
+        z1 = z1.view(img1.shape[0], -1)
+        pred = self.classifier(z1)
+        return pred, z1
+
+    def forward_single_fs(self, img1):
+        #print(f'Input shape: {img1.shape}')
+
+        z1 = self.encoder(img1) # [bs,16,4,4,4]
+        #print(f'Encoder output shape: {z1.shape}')
+
+        z1_reshaped = z1.view(-1, 16, 16, 4) # [bs,16,16,4]
+        #print(f'Encoder output shape after reshape: {z1_reshaped.shape}')
+        if self.vn_module is None:
+            return z1_reshaped
+        
+        # don't need this, need this to flatten in order to pass into a FC Network, but could keep for consistency
+        z1_flattened = z1.view(img1.shape[0], -1, 1) # [bs,n,1]
+        # n dimensional 1D vector, as in paper
+        # would be input to classifier/decoder for classification result
+        #print(f'Encoder output shape as n dimensional 1D vector: {z1_flattened.shape}')
+
+        # reshape to 2D tensor for VN module
+        z1_flattened_2d = z1_flattened.view(-1, 1) # [bs * n, 1]
+        
+        # use the VN module to get the nx3 output
+        z1_out_2d = self.vn_module(z1_flattened_2d) # [bs * n, 3]
+        #print(f'VN module output shape: {z1_out_2d.shape}')
+
+        # Reshape back to 3D tensor
+        z1_out = z1_out_2d.view(img1.shape[0], -1, 3) # [bs, n, 3]
+        #print(f'VN module output shape as 3D tensor: {z1_out.shape}')
+
+        return z1_out
+
+    def compute_classification_loss(self, pred, label, pos_weight=torch.tensor([2.]), dataset_name='ADNI', postfix='NC_AD', task='classification'):
+        if task == 'age':
+            loss = nn.MSELoss()(pred.squeeze(1), label)
+            return loss, pred
+        else:
+            # pdb.set_trace()
+            if dataset_name == 'ADNI':
+                if  'NC_AD' in postfix:
+                    label = label / 2
                 elif 'pMCI_sMCI' in postfix:
                     label = label - 3
             elif dataset_name == 'LAB':
@@ -340,227 +458,146 @@ class CLS(nn.Module):
                 label = (label > 0).double()
             else:
                 raise ValueError('Not support!')
-            loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
+            
+            # calculate the weight based on class imbalance
+            # based on pytroch recommended weight computation: pos_weight to be a ratio between the negative counts and the positive counts for each classpos_weight to be a ratio between the negative counts and the positive counts for each class
+            num_samples = len(label)
+            positive_samples = sum(label)
+            positive_samples = 1 if positive_samples == 0 else positive_samples
+            negative_samples = num_samples - positive_samples
+            weight = torch.tensor([negative_samples / positive_samples])
+
+            loss = nn.BCEWithLogitsLoss(pos_weight=weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
             return loss, F.sigmoid(pred)
 
-class AE(nn.Module):
-    def __init__(self):
-        super(AE, self).__init__()
-        self.encoder = Encoder(in_num_ch=1, inter_num_ch=16, num_conv=1)
-        self.decoder = Decoder(out_num_ch=1, inter_num_ch=16, num_conv=1)
+    def compute_distance_loss(self, fs1, post_rot_fs1, fs2, post_rot_fs2, bs):      
+        # Calculate the Frobenius norm (L2 norm) of the difference between the matrices
+        diff_matrix_1 = fs2 - post_rot_fs1
+        diff_matrix_2 = fs1 - post_rot_fs2
+        # updated loss version
+        distance_loss = torch.norm(diff_matrix_1, p='fro', dim=(1, 2)) + torch.norm(diff_matrix_2, p='fro', dim=(1, 2))
+        return torch.mean(distance_loss)
+        
+        #distance_loss = torch.norm(diff_matrix_1, p='fro') + torch.norm(diff_matrix_2, p='fro')
+        #return distance_loss / bs
 
-    def forward(self, img1, img2, interval):
-        bs = img1.shape[0]
-        zs = self.encoder(torch.cat([img1, img2], 0))
-        recons = self.decoder(zs)
-        zs_flatten = zs.view(bs*2, -1)
-        z1, z2 = zs_flatten[:bs], zs_flatten[bs:]
-        recon1, recon2 = recons[:bs], recons[bs:]
-        return [z1, z2], [recon1, recon2]
+        # updated loss extra version
+        # also consider maximizing the distance between the matrices fs1 and fs2
+        diff_matrix_3 = fs1 - fs2
+        maximize_loss = -torch.norm(diff_matrix_3, p='fro', dim=(1, 2))  # negative sign to maximize the distance
 
-    # reconstruction loss
-    def compute_recon_loss(self, x, recon):
-        return torch.mean((x - recon) ** 2)
+        # so, what I want to enforce is that the distance between fs1 and fs2 is larger than the distance between fs1 and post_rot_fs2
+        # and the distance between fs2 and fs1 is larger than the distance between fs2 and post_rot_fs1
+        # this is what has to be added to the loss:
+        # diff_matrix_4 = fs1 - post_rot_fs2
+        # diff_matrix_5 = fs2 - post_rot_fs1
+        # maximize_loss = -torch.norm(diff_matrix_3, p='fro', dim=(1, 2)) + torch.norm(diff_matrix_4, p='fro', dim=(1, 2)) - torch.norm(diff_matrix_5, p='fro', dim=(1, 2))
 
-class VAE(nn.Module):
-    def __init__(self):
-        super(VAE, self).__init__()
-        self.encoder = Encoder_Var(in_num_ch=1, inter_num_ch=16, num_conv=1)
-        self.decoder = Decoder(out_num_ch=1, inter_num_ch=16, num_conv=1)
+        #return torch.mean(distance_loss) + 0.1 * torch.mean(maximize_loss)
+        
+class SwinTransformer(nn.Module):
+    """
+    Implements Swin Transformer from the `"Swin Transformer: Hierarchical Vision Transformer using
+    Shifted Windows" <https://arxiv.org/pdf/2103.14030>`_ paper.
+    Args:
+        patch_size (List[int]): Patch size.
+        embed_dim (int): Patch embedding dimension.
+        depths (List(int)): Depth of each Swin Transformer layer.
+        num_heads (List(int)): Number of attention heads in different layers.
+        window_size (List[int]): Window size.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. Default: 4.0.
+        dropout (float): Dropout rate. Default: 0.0.
+        attention_dropout (float): Attention dropout rate. Default: 0.0.
+        stochastic_depth_prob (float): Stochastic depth rate. Default: 0.1.
+        num_classes (int): Number of classes for classification head. Default: 1000.
+        block (nn.Module, optional): SwinTransformer Block. Default: None.
+        norm_layer (nn.Module, optional): Normalization layer. Default: None.
+        downsample_layer (nn.Module): Downsample layer (patch merging). Default: PatchMerging.
+    """
 
-    def forward(self, img1, img2, interval):
-        bs = img1.shape[0]
-        zs_mu, zs_logvar = self.encoder(torch.cat([img1, img2], 0))
-        zs = self._sample(zs_mu, zs_logvar)
-        recons = self.decoder(zs)
-        zs_flatten = zs.view(bs*2, -1)
-        z1, z2 = zs_flatten[:bs], zs_flatten[bs:]
-        recon1, recon2 = recons[:bs], recons[bs:]
-        return [z1, z2, zs_mu.view(bs*2, -1), zs_logvar.view(bs*2, -1)], [recon1, recon2]
+    def __init__(
+        self,
+        patch_size: List[int],
+        embed_dim: int,
+        depths: List[int],
+        num_heads: List[int],
+        window_size: List[int],
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.0,
+        attention_dropout: float = 0.0,
+        stochastic_depth_prob: float = 0.1,
+        num_classes: int = 1000,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+        block: Optional[Callable[..., nn.Module]] = None,
+        downsample_layer: Callable[..., nn.Module] = PatchMerging,
+    ):
+        super().__init__()
+        _log_api_usage_once(self)
+        self.num_classes = num_classes
 
-    def _sample(self, mu, logvar):
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            return eps * std + mu
-        else:
-            return mu
+        if block is None:
+            block = SwinTransformerBlock
+        if norm_layer is None:
+            norm_layer = partial(nn.LayerNorm, eps=1e-5)
 
-    # reconstruction loss
-    def compute_recon_loss(self, x, recon):
-        return torch.mean((x - recon) ** 2)
+        layers: List[nn.Module] = []
+        # split image into non-overlapping patches
+        layers.append(
+            nn.Sequential(
+                nn.Conv2d(
+                    3, embed_dim, kernel_size=(patch_size[0], patch_size[1]), stride=(patch_size[0], patch_size[1])
+                ),
+                Permute([0, 2, 3, 1]),
+                norm_layer(embed_dim),
+            )
+        )
 
-    # kl loss
-    def compute_kl_loss(self, mu, logvar):
-        kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-        return torch.mean(torch.sum(kl, dim=-1))
+        total_stage_blocks = sum(depths)
+        stage_block_id = 0
+        # build SwinTransformer blocks
+        for i_stage in range(len(depths)):
+            stage: List[nn.Module] = []
+            dim = embed_dim * 2**i_stage
+            for i_layer in range(depths[i_stage]):
+                # adjust stochastic depth probability based on the depth of the stage block
+                sd_prob = stochastic_depth_prob * float(stage_block_id) / (total_stage_blocks - 1)
+                stage.append(
+                    block(
+                        dim,
+                        num_heads[i_stage],
+                        window_size=window_size,
+                        shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],
+                        mlp_ratio=mlp_ratio,
+                        dropout=dropout,
+                        attention_dropout=attention_dropout,
+                        stochastic_depth_prob=sd_prob,
+                        norm_layer=norm_layer,
+                    )
+                )
+                stage_block_id += 1
+            layers.append(nn.Sequential(*stage))
+            # add patch merging layer
+            if i_stage < (len(depths) - 1):
+                layers.append(downsample_layer(dim, norm_layer))
+        self.features = nn.Sequential(*layers)
 
-class LSSL(nn.Module):
-    def __init__(self, gpu='None'):
-        super(LSSL, self).__init__()
-        self.encoder = Encoder(in_num_ch=1, inter_num_ch=16, num_conv=1)
-        self.decoder = Decoder(out_num_ch=1, inter_num_ch=16, num_conv=1)
-        self.direction = nn.Linear(1, 1024)
-        self.gpu = gpu
+        num_features = embed_dim * 2 ** (len(depths) - 1)
+        self.norm = norm_layer(num_features)
+        self.permute = Permute([0, 3, 1, 2])  # B H W C -> B C H W
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.flatten = nn.Flatten(1)
+        self.head = nn.Linear(num_features, num_classes)
 
-    def forward(self, img1, img2, interval):
-        bs = img1.shape[0]
-        zs = self.encoder(torch.cat([img1, img2], 0))
-        recons = self.decoder(zs)
-        zs_flatten = zs.view(bs*2, -1)
-        z1, z2 = zs_flatten[:bs], zs_flatten[bs:]
-        recon1, recon2 = recons[:bs], recons[bs:]
-        return [z1, z2], [recon1, recon2]
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.trunc_normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-    # reconstruction loss
-    def compute_recon_loss(self, x, recon):
-        return torch.mean((x - recon) ** 2)
-
-    # direction loss
-    def compute_direction_loss(self, zs):
-        z1, z2 = zs[0], zs[1]
-        bs = z1.shape[0]
-        delta_z = z2 - z1
-        delta_z_norm = torch.norm(delta_z, dim=1) + 1e-12
-        d_vec = self.direction(torch.ones(bs, 1).to(self.gpu))
-        d_vec_norm = torch.norm(d_vec, dim=1) + 1e-12
-        cos = torch.sum(delta_z * d_vec, 1) / (delta_z_norm * d_vec_norm)
-        return (1. - cos).mean()
-
-class LSP(nn.Module):
-    def __init__(self, model_name='LSP', latent_size=1024, num_neighbours=3, agg_method='gaussian', N_km=[120,60,30], gpu=None):
-        super(LSP, self).__init__()
-        self.model_name = model_name
-        self.encoder = Encoder(in_num_ch=1, inter_num_ch=16, num_conv=1)
-        self.decoder = Decoder(out_num_ch=1, inter_num_ch=16, num_conv=1)
-        if latent_size < 1024:
-            self.mapping = nn.Linear(1024, latent_size)
-        else:
-            self.mapping = nn.Sequential()
-        self.num_neighbours = num_neighbours
-        self.agg_method = agg_method
-        self.N_km = N_km
-        self.gpu = gpu
-
-    def forward(self, img1, img2, interval):
-        bs = img1.shape[0]
-        zs = self.encoder(torch.cat([img1, img2], 0))
-        recons = self.decoder(zs)
-        zs_flatten = self.mapping(zs.view(bs*2, -1))
-        z1, z2 = zs_flatten[:bs], zs_flatten[bs:]
-        recon1, recon2 = recons[:bs], recons[bs:]
-        return [z1, z2], [recon1, recon2]
-
-    def build_graph_batch(self, zs):
-        z1 = zs[0]
-        bs = z1.shape[0]
-        dis_mx = torch.zeros(bs, bs).to(self.gpu)
-        for i in range(bs):
-            for j in range(i+1, bs):
-                dis_mx[i, j] = torch.sum((z1[i] - z1[j]) ** 2)
-                dis_mx[j, i] = dis_mx[i, j]
-        sigma = (torch.sort(dis_mx)[0][:,-1])**0.5 - (torch.sort(dis_mx)[0][:,1])**0.5
-        if self.agg_method == 'gaussian':
-            adj_mx = torch.exp(-dis_mx/100)
-            # adj_mx = torch.exp(-dis_mx / (2*sigma**2))
-        # pdb.set_trace()
-        if self.num_neighbours < bs:
-            adj_mx_filter = torch.zeros(bs, bs).to(self.gpu)
-            for i in range(bs):
-                ks = torch.argsort(dis_mx[i], descending=False)[:self.num_neighbours+1]
-                adj_mx_filter[i, ks] = adj_mx[i, ks]
-                adj_mx_filter[i, i] = 0.
-            return adj_mx_filter
-        else:
-            return adj_mx * (1. - torch.eye(bs, bs).to(self.gpu))
-
-    def build_graph_dataset(self, zs_all, zs):
-        z1_all = zs_all[0]
-        z1 = zs[0]
-        ds = z1_all.shape[0]
-        bs = z1.shape[0]
-        dis_mx = torch.zeros(bs, ds).to(self.gpu)
-        for i in range(bs):
-            for j in range(ds):
-                dis_mx[i, j] = torch.sum((z1[i] - z1_all[j]) ** 2)
-        sigma = (torch.sort(dis_mx)[0][:,-1])**0.5 - (torch.sort(dis_mx)[0][:,1])**0.5
-        if self.agg_method == 'gaussian':
-            adj_mx = torch.exp(-dis_mx/100)
-            # adj_mx = torch.exp(-dis_mx / (2*sigma**2))
-        if self.num_neighbours < bs:
-            adj_mx_filter = torch.zeros(bs, ds).to(self.gpu)
-            for i in range(bs):
-                ks = torch.argsort(dis_mx[i], descending=False)[:self.num_neighbours+1]
-                adj_mx_filter[i, ks] = adj_mx[i, ks]
-            return adj_mx_filter
-        else:
-            return adj_mx * (1. - torch.eye(bs, bs).to(self.gpu))
-
-    def compute_social_pooling_delta_z_batch(self, zs, interval, adj_mx):
-        z1, z2 = zs[0], zs[1]
-        delta_z = (z2 - z1) / interval.unsqueeze(1)      # [bs, ls]
-        delta_h = torch.matmul(adj_mx, delta_z) / adj_mx.sum(1, keepdim=True)    # [bs, ls]
-        return delta_z, delta_h
-
-    def compute_social_pooling_delta_z_dataset(self, zs_all, interval_all, zs, interval, adj_mx):
-        z1, z2 = zs[0], zs[1]
-        delta_z = (z2 - z1) / interval.unsqueeze(1)      # [bs, ls]
-        z1_all, z2_all = zs_all[0], zs_all[1]
-        delta_z_all = (z2_all - z1_all) / interval_all.unsqueeze(1)      # [bs, ls]
-        delta_h = torch.matmul(adj_mx, delta_z_all) / adj_mx.sum(1, keepdim=True)    # [bs, ls]
-        return delta_z, delta_h
-
-    # reconstruction loss
-    def compute_recon_loss(self, x, recon):
-        return torch.mean((x - recon) ** 2)
-
-    # direction loss, 1 - cos<delta_z, delta_h>
-    def compute_direction_loss(self, delta_z, delta_h):
-        delta_z_norm = torch.norm(delta_z, dim=1) + 1e-12
-        delta_h_norm = torch.norm(delta_h, dim=1) + 1e-12
-        cos = torch.sum(delta_z * delta_h, 1) / (delta_z_norm * delta_h_norm)
-        return (1. - cos).mean()
-
-    # distance loss, (delta_h - delta_z) / norm_delta_z
-    def compute_distance_loss(self, delta_z, delta_h):
-        delta_z_norm = torch.norm(delta_z, dim=1) + 1e-12
-        dis = torch.norm(delta_z - delta_h, dim=1)
-        return (dis / delta_z_norm).mean()
-
-    # multi-instance infoNCE loss
-    def compute_multi_instance_NCE(self, z1, adj_mx):
-        pdb.set_trace()
-        ztz = torch.matmul(z1, z1.T)    # (bs, bs)
-        select_idx = torch.argsort(adj_mx, dim=1, descending=True)[:, :self.num_neighbours]
-        ztz_pos = torch.gather(ztz, dim=1, index=select_idx)
-        nominator = torch.logsumexp(ztz_pos, dim=1)
-        denominator = torch.logsumexp(ztz, dim=1)
-        loss = -(nominator - denominator).mean()
-        return loss
-
-    def update_kmeans(self, z1_list, cluster_ids_list, cluster_centers_list):
-        z1_list = torch.tensor(z1_list).to(self.gpu)
-        self.prototype_list = [torch.tensor(c).to(self.gpu) for c in cluster_centers_list]
-        self.concentration_list = []
-        for m in range(len(self.N_km)):         # for each round of kmeans
-            prototypes = self.prototype_list[m]
-            cluster_ids = cluster_ids_list[m]
-            concentration_m = []
-            for c in range(self.N_km[m]):       # for each cluster center
-                zs = z1_list[cluster_ids == c]
-                n_c = zs.shape[0]
-                norm = torch.norm(zs - prototypes[c].view(1,-1), dim=1).sum()
-                concentration = norm / (n_c * math.log(n_c + 10))
-                concentration_m.append(concentration)
-            self.concentration_list.append(torch.tensor(concentration_m).to(self.gpu))
-
-    # prototype NCE loss
-    def compute_prototype_NCE(self, z1, cluster_ids):
-        loss = 0
-        for m in range(len(self.N_km)):         # for each round of kmeans
-            prototypes_sel = self.prototype_list[m][cluster_ids[:, m].detach().cpu().numpy()]
-            concentration_sel = self.concentration_list[m][cluster_ids[:, m].detach().cpu().numpy()]
-            nominator = torch.sum(z1 * prototypes_sel / concentration_sel.view(-1,1), 1)
-            denominator = torch.logsumexp(torch.matmul(z1, torch.transpose(self.prototype_list[m], 0, 1)) / self.concentration_list[m].view(1,self.N_km[m]), dim=1)
-            loss += -(nominator - denominator).mean()
-        return loss / (len(self.N_km)*z1.shape[0])
+    def forward(self, x):
+        x = self.features(x)
+        x = self.norm(x)
+        x = self.permute(x)
+        x = self.avgpool(x)
+        x = self.flatten(x)
+        return x

@@ -1,0 +1,37 @@
+{
+    "os": "macOS-13.5-arm64-arm-64bit",
+    "python": "3.9.16",
+    "heartbeatAt": "2023-11-10T20:33:05.767393",
+    "startedAt": "2023-11-10T20:33:04.986657",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/Users/shizhehe/dev/research/vector_neurons_mri/experiments/main_dist_loss_vn_module.py",
+    "codePathLocal": "experiments/main_dist_loss_vn_module.py",
+    "codePath": "experiments/main_dist_loss_vn_module.py",
+    "git": {
+        "remote": "https://github.com/h3seas0n/vector_neurons_mri.git",
+        "commit": "546b38bd13a7b11e606cc66c677d3c48b46e3d55"
+    },
+    "email": "shizhe.he6@gmail.com",
+    "root": "/Users/shizhehe/dev/research/vector_neurons_mri",
+    "host": "DN525f8m.SUNet",
+    "username": "shizhehe",
+    "executable": "/Users/shizhehe/miniforge3/envs/mri_vnn/bin/python",
+    "cpu_count": 8,
+    "cpu_count_logical": 8,
+    "disk": {
+        "/": {
+            "total": 460.4317207336426,
+            "used": 368.02682876586914
+        }
+    },
+    "gpuapple": {
+        "type": "arm",
+        "vendor": "Apple"
+    },
+    "memory": {
+        "total": 16.0
+    }
+}

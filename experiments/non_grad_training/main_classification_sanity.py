@@ -1,5 +1,6 @@
 import os
 import glob
+import sys
 import time
 import torch
 import torch.optim as optim
@@ -7,16 +8,17 @@ import numpy as np
 import yaml
 import pdb
 import tqdm
-import h5py
-
 from model_vn import *
 from util import *
-from so3_transformations.transformations import *
 
-import medutils
-import matplotlib.pyplot as plt
+import h5py
+
+LOCAL = False
+DEBUG = False
+VNN = True
 
 phase = 'train'
+#phase = 'evaluate'
 
 # set seed
 seed = 10
@@ -28,17 +30,21 @@ torch.backends.cudnn.deterministic=True
 # cuda
 cuda = 0
 device = torch.device('cuda:'+ str(cuda))
+
+if LOCAL:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 froze_encoder = False
 
 # model setting
-model_name = 'LSP' # to be changed, ask about this, should be same settings as CLS
-latent_size = 512 #1024
+model_name = 'CLS'  
+latent_size = 512
 use_feature = ['z', 'delta_z']
 
 pos_weight = [1]
 
 # training setting
-epochs = 50
+epochs = 40
 batch_size = 64
 num_fold = 5
 fold = 0
@@ -46,28 +52,31 @@ shuffle = True
 lr = 0.0001
 aug = False # this could be leading to the incorrect shapes?! see implementation of CrossSectionalDataset
 
-subj_list_postfix = 'C'
-
 # dataset
 data_type = 'single'
 dataset_name = 'ADNI'
-data_path = '/Users/shizhehe/dev/research/vector_neurons_mri/ADNI/'
+data_path = '/scratch/users/shizhehe/ADNI/'
 img_file_name = 'ADNI_longitudinal_img.h5'
 noimg_file_name = 'ADNI_longitudinal_noimg.h5'
-subj_list_postfix = 'NC_AD_pMCI_sMCI'
+#subj_list_postfix = 'NC_AD_pMCI_sMCI'
+subj_list_postfix = 'NC_AD'
+if LOCAL:
+    data_path = 'ADNI/'
 
 # time
 localtime = time.localtime(time.time())
 time_label = str(localtime.tm_year) + '_' + str(localtime.tm_mon) + '_' + str(localtime.tm_mday) + '_' + str(localtime.tm_hour) + '_' + str(localtime.tm_min)
 
 # checkpoints
-ckpt_path = os.path.join('/Users/shizhehe/dev/research/vector_neurons_mri/ADNI/', dataset_name, model_name, time_label)
+ckpt_folder = '/scratch/users/shizhehe/ADNI/ckpt/'
+if LOCAL:
+    ckpt_folder = 'ADNI/ckpt/'
+if VNN:
+    ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, time_label + "_VNN")
+else:
+    ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, time_label)
 if not os.path.exists(ckpt_path):
     os.makedirs(ckpt_path)
-
-# possible rotations
-rotations = [90, 180, 270]
-axes = [(0, 1), (0, 2), (1, 2)]
 
 print("Loading Data")
 
@@ -86,8 +95,10 @@ testDataLoader = Data.testLoader
 print("Data loaded!!!")
 
 # define model
-#model = VNN_Net(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=device).to(device)
-model = VNN_Net(latent_size, use_feature=use_feature, dropout=(froze_encoder == False))
+if LOCAL:
+    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=None).to(device)
+else:
+    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=device).to(device)
 
 print("Model set!!!")
 
@@ -97,12 +108,11 @@ if froze_encoder:
         param.requires_grad = False
 
 # define optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5, amsgrad=True)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=5, min_lr=1e-5)
+optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4, amsgrad=True)
+# optimizer = torch.optim.SGD(model.parameters(), lr=config['lr'], momentum=0.9, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-5)
 
 start_epoch = -1
-
-visualization = False
 
 # ------- train -------
 def train():
@@ -118,61 +128,56 @@ def train():
         loss_all_dict = {'all': 0, 'recon': 0., 'dis': 0., 'dir': 0., 'cls': 0.}
         global_iter0 = global_iter
 
+        pred_list = [] 
+        label_list = []
+
         print(f'Number of Training Batches: {len(trainDataLoader)}')
 
         # go through all data batches in dataset
         for iter, sample in enumerate(trainDataLoader, 0):
             global_iter += 1
-            rotation = np.random.choice(rotations)
-            #axis = np.random.choice(axes)s
-            axis = axes[np.random.randint(0, len(axes))]
 
-            rot_mat = generate_rotation_matrix(rotation) # R
-            inv_rot_mat = rot_mat.T # R^-1
+            img1 = sample['img'].to(device, dtype=torch.float).unsqueeze(1)
 
-            #img1 = sample['img'].to(device, dtype=torch.float).unsqueeze(1)
-            #img1 = img1.unsqueeze(-1) # error message gotten for sizes
-            #print(img1.shape)
-
-            img1 = sample['img']#.to(device, dtype=torch.float) # I1
-            img2 = np.empty_like(img1) # I2
-
-            # I2 = R x I1
-            for i in range(batch_size):
-                sample = img1[i].detach().clone()
-                img2[i] = rotate_custom(sample, rot_mat, axis)
-            
-            img2 = torch.from_numpy(img2)#.to(device, dtype=torch.float) # I2
-
-            # check rotation through visualization
-            if visualization:
-                medutils.visualization.show(img1.numpy()[0])
-                plt.show()
-                medutils.visualization.show(img2.numpy()[0])
-                plt.show()
-
-            img1 = img1.unsqueeze(1)
-            img2 = img2.unsqueeze(1)
-            print(img1.shape)
-            print(img2.shape)
+            if subj_list_postfix == 'C_single':
+                label = sample['age'].to(device, dtype=torch.float)
+            else:
+                label = sample['label'].to(device, dtype=torch.float)
+                #label[label != 0] = 1
 
             # if remainder of data isn't enough for batch
-            print(f'Size: {img1.shape[0]}, batch_size: {batch_size}')
+            if DEBUG:
+                print(f"Input batch shape: {img1.shape}")
+                print(f'Size: {img1.shape[0]}, batch_size: {batch_size}')
             if img1.shape[0] <= batch_size // 2:
                 print("Size of data too small!")
                 break
 
-            """# run model
-            z1, z2 = model.forward_pair(img1, img2)
+            # run model
+            pred, z1 = model.forward_single(img1)
+            #pred = pred.view(-1, 1)
+            #label = label.view(-1, 1)
 
-            #print(f'Prediction sample: {pred}')
-            #loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), subj_list_postfix)
-            loss_cls = 0
-            print(f'Sample loss: {loss_cls}')
+            if DEBUG:
+                print(f'Prediction sample: {pred}')
+                print(f'Label sample: {label}')
+
+                print(f'Size of input: {img1.shape}, size of label: {label.shape}, size of prediction {pred.shape}')
+
+            loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
+
+            if DEBUG:
+                print(f'Sample loss: {loss_cls}')
 
             #loss = config['lambda_cls'] * loss_cls
             loss = loss_cls
             loss_all_dict['cls'] += loss_cls.item()
+
+            pred_list.append(pred_sig.detach().cpu().numpy())
+            label_list.append(label.detach().cpu().numpy())
+
+            #if DEBUG:
+                #print(pred_list)
 
             loss.backward()
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -192,8 +197,6 @@ def train():
                 print('Epoch[%3d], iter[%3d]: loss=[%.4f], cls=[%.4f]' \
                         % (epoch, iter, loss.item(), loss_cls.item()))
 
-        # skip this for now, first get model to train!!!
-
         # save train result
         num_iter = global_iter - global_iter0
         for key in loss_all_dict.keys():
@@ -201,9 +204,9 @@ def train():
         save_result_stat(loss_all_dict, {'ckpt_path': ckpt_path}, info='epoch[%2d]'%(epoch))
         print(loss_all_dict)
 
-        pred_list = np.concatenate(pred_list, axis=0)
+        pred_list = np.concatenate(pred_list, axis=0) # pred already sigmoid
         label_list = np.concatenate(label_list, axis=0)
-        compute_classification_metrics(label_list, pred_list, subj_list_postfix)
+        compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix)
 
         # validation
         # pdb.set_trace()
@@ -222,7 +225,7 @@ def train():
                 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), \
                 'model': model.state_dict()}
         print(optimizer.param_groups[0]['lr'])
-        save_checkpoint(state, is_best, ckpt_path)"""
+        save_checkpoint(state, is_best, ckpt_path)
 
 
 def evaluate(phase='val', set='val', save_res=True, info=''):
@@ -275,10 +278,11 @@ def evaluate(phase='val', set='val', save_res=True, info=''):
                 label = sample['label'].to(device, dtype=torch.float)
 
             # run model
-            pred = model.forward_single(img1)
+            pred, z1 = model.forward_single(img1)
 
-            loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), subj_list_postfix)
-            loss = config['lambda_cls'] * loss_cls
+            loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
+            #loss = config['lambda_cls'] * loss_cls
+            loss = loss_cls
             loss_all_dict['cls'] += loss_cls.item()
 
             pred_list.append(pred_sig.detach().cpu().numpy())
@@ -293,7 +297,7 @@ def evaluate(phase='val', set='val', save_res=True, info=''):
 
         pred_list = np.concatenate(pred_list, axis=0)
         label_list = np.concatenate(label_list, axis=0)
-        bacc = compute_classification_metrics(label_list, pred_list, subj_list_postfix)
+        bacc = compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix)
         loss_all_dict['bacc'] = bacc
 
         if phase == 'test' and save_res:

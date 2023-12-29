@@ -8,13 +8,15 @@ import numpy as np
 import yaml
 import pdb
 import tqdm
-from model import *
+from model_vn import *
 from util import *
+from so3_transformations.transformations import *
 
 import h5py
 
-LOCAL = True
-DEBUG = True
+LOCAL = False
+DEBUG = False
+VNN = True
 
 phase = 'train'
 #phase = 'evaluate'
@@ -60,7 +62,7 @@ noimg_file_name = 'ADNI_longitudinal_noimg.h5'
 #subj_list_postfix = 'NC_AD_pMCI_sMCI'
 subj_list_postfix = 'NC_AD'
 if LOCAL:
-    data_path = '/Users/he/code/vector_neurons_mri/ADNI'
+    data_path = 'ADNI/'
 
 # time
 localtime = time.localtime(time.time())
@@ -69,8 +71,11 @@ time_label = str(localtime.tm_year) + '_' + str(localtime.tm_mon) + '_' + str(lo
 # checkpoints
 ckpt_folder = '/scratch/users/shizhehe/ADNI/ckpt/'
 if LOCAL:
-    ckpt_folder = '/Users/he/code/vector_neurons_mri/ADNI/ckpt/'
-ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, time_label)
+    ckpt_folder = 'ADNI/ckpt/'
+if VNN:
+    ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, time_label + "_VNN" + "_v2")
+else:
+    ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, time_label + "_v2")
 if not os.path.exists(ckpt_path):
     os.makedirs(ckpt_path)
 
@@ -110,6 +115,10 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', fa
 
 start_epoch = -1
 
+# possible rotations
+rotations = [0, 90, 180, 270]
+axes = [(0, 1), (0, 2), (1, 2)]
+
 # ------- train -------
 def train():
     print("Starting Training...")
@@ -133,7 +142,7 @@ def train():
         for iter, sample in enumerate(trainDataLoader, 0):
             global_iter += 1
 
-            img1 = sample['img'].to(device, dtype=torch.float).unsqueeze(1)
+            img1 = sample['img'].cpu()
 
             if subj_list_postfix == 'C_single':
                 label = sample['age'].to(device, dtype=torch.float)
@@ -148,16 +157,30 @@ def train():
                 print("Size of data too small!")
                 break
 
+            rotation = np.random.choice(rotations)
+            axis = axes[np.random.randint(0, len(axes) - 1)]
+            #axis = axes[0]
+            rot_mat = generate_rotation_matrix(rotation) # R
+        
+            # rotate batch
+            img2 = np.empty_like(img1)
+
+            # I2 = R x I1
+            for i in range(min(img1.shape[0], batch_size)):
+                volume = img1[i]
+                img2[i] = rotate_custom(volume, rot_mat, axis)
+            img2 = torch.from_numpy(img2).to(device, dtype=torch.float) # I2
+
+            img2 = img2.unsqueeze(1)
+            
             # run model
-            pred, z1 = model.forward_single(img1)
-            #pred = pred.view(-1, 1)
-            #label = label.view(-1, 1)
+            pred, z1 = model.forward_single(img2)
 
             if DEBUG:
                 print(f'Prediction sample: {pred}')
                 print(f'Label sample: {label}')
 
-                print(f'Size of input: {img1.shape}, size of label: {label.shape}, size of prediction {pred.shape}')
+                print(f'Size of input: {img2.shape}, size of label: {label.shape}, size of prediction {pred.shape}')
 
             loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
 
@@ -171,8 +194,8 @@ def train():
             pred_list.append(pred_sig.detach().cpu().numpy())
             label_list.append(label.detach().cpu().numpy())
 
-            if DEBUG:
-                print(pred_list)
+            #if DEBUG:
+                #print(pred_list)
 
             loss.backward()
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -199,11 +222,9 @@ def train():
         save_result_stat(loss_all_dict, {'ckpt_path': ckpt_path}, info='epoch[%2d]'%(epoch))
         print(loss_all_dict)
 
-        pred_list = np.concatenate(pred_list, axis=0)
+        pred_list = np.concatenate(pred_list, axis=0) # pred already sigmoid
         label_list = np.concatenate(label_list, axis=0)
         compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix)
-
-        sys.exit()
 
         # validation
         # pdb.set_trace()

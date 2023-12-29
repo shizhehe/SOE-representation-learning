@@ -9,6 +9,7 @@ import scipy.ndimage
 from datetime import datetime
 import random
 import pdb
+import sys
 
 seed = 10
 np.random.seed(seed)
@@ -17,7 +18,7 @@ np.random.seed(seed)
 # preprocess subject label and data
 csv_path_raw = '/home/groups/kpohl/t1_data/adni/ADNIMERGE.csv'  # label for each timepoint (CN, AD, Demantia, MCI, LMCI, EMCI)
 data_path = '/home/groups/kpohl/t1_data/adni/img_64_longitudinal/'
-csv_path_raw = '/Users/he/code/vector_neurons_mri/ADNI/other/ADNIMERGE.csv'
+#csv_path_raw = '/Users/he/code/vector_neurons_mri/ADNI/other/ADNIMERGE.csv'
 df_raw = pd.read_csv(csv_path_raw, usecols=['PTID', 'DX_bl', 'DX', 'EXAMDATE', 'AGE'])
 
 
@@ -76,6 +77,42 @@ for img_path in img_paths:
             nan_idx_list.append([subj_id, len(subj_data[subj_id]['label_all'])])
             subj_data[subj_id]['label_all'].append(-1)
 
+        #print(subj_data[subj_id]['age'])
+
+
+# week 12: target age label should be normalized by z-score
+age_data_list = []
+NC_data_list = []
+for subj_id, data in subj_data.items():
+    age_data = data['age']
+    label = data['label']
+    if label == 0:
+        NC_data_list.append(age_data)
+    age_data_list.append(age_data)
+
+mean_age = np.mean(age_data_list)
+std_age = np.std(age_data_list)
+min_age = np.min(age_data_list)
+max_age = np.max(age_data_list)
+
+print('Mean age:', mean_age)
+print('Std age:', std_age)
+print('Min age:', min_age)
+print('Max age:', max_age)
+
+print('Mean NC age:', np.mean(NC_data_list))
+print('Std NC age:', np.std(NC_data_list))
+print('Min NC age:', np.min(NC_data_list))
+print('Max NC age:', np.max(NC_data_list))
+
+for subj_id, data in subj_data.items():
+    rows = df_raw.loc[(df_raw['PTID'] == subj_id)]
+    if rows.shape[0] != 0:
+        subj_data[subj_id]['age'] = (subj_data[subj_id]['age'] - mean_age) / std_age
+        # add normalization factors for usage in training and evaluation
+        subj_data[subj_id]['std_age'] = std_age
+        subj_data[subj_id]['mean_age'] = mean_age
+
 # fill nan
 print('Number of nan label:', nan_label_count)
 for subj in nan_idx_list:
@@ -123,7 +160,9 @@ for subj_id in subj_data.keys():
     num_ts_ad += (label_all==2).sum()
 print('Number of timesteps, NC/MCI/AD:', num_ts_nc, num_ts_mci, num_ts_ad)
 print('Number of subject, NC/sMCI/pMCI/AD:', num_nc, num_smci, num_pmci, num_ad)
-"""
+
+
+
 # save subj_list_dict to npy
 np.save('/scratch/users/shizhehe/ADNI/ADNI_longitudinal_subj.npy', subj_list_dict)
 
@@ -165,10 +204,12 @@ if not os.path.exists(h5_noimg_path):
         # subj_noimg.create_dataset('date_start', data=subj_data[subj_id]['date_start'])
         subj_noimg.create_dataset('date_interval', data=subj_data[subj_id]['date_interval'])
         subj_noimg.create_dataset('age', data=subj_data[subj_id]['age'])
+        subj_noimg.create_dataset('mean_age', data=subj_data[subj_id]['mean_age'])
+        subj_noimg.create_dataset('std_age', data=subj_data[subj_id]['std_age'])
         # subj_noimg.create_dataset('img_paths', data=subj_data[subj_id]['img_paths'])
     f_noimg.close()
 
-"""# save images to h5
+# save images to h5
 h5_img_path = '/scratch/users/shizhehe/ADNI/ADNI_longitudinal_img.h5'
 if not os.path.exists(h5_img_path):
     f_img = h5py.File(h5_img_path, 'a')
@@ -182,7 +223,6 @@ if not os.path.exists(h5_img_path):
             subj_img.create_dataset(os.path.basename(img_path), data=img)
         print(i, subj_id)
     f_img.close()
-"""
 
 def augment_image(img, rotate, shift, flip):
     # pdb.set_trace()
@@ -194,7 +234,6 @@ def augment_image(img, rotate, shift, flip):
         img = np.flip(img, 0) - np.zeros_like(img)
     return img
 
-# currently takes too long, time out - TBD
 h5_img_path = '/scratch/users/shizhehe/ADNI/ADNI_longitudinal_img_aug.h5'
 aug_size = 10
 if not os.path.exists(h5_img_path):
@@ -216,7 +255,9 @@ if not os.path.exists(h5_img_path):
             subj_img.create_dataset(os.path.basename(img_path), data=imgs)
         print(i, subj_id)
     f_img.close()
-"""
+
+sys.exit()
+
 def save_data_txt(path, subj_id_list, case_id_list):
     with open(path, 'w') as ft:
         for subj_id, case_id in zip(subj_id_list, case_id_list):
@@ -262,20 +303,29 @@ def get_subj_single_case_id_list(subj_data, subj_id_list):
  
 #pdb.set_trace()
 #subj_list_postfix = 'NC_AD_pMCI_sMCI'
-#subj_list_postfix = 'NC_AD_pMCI_sMCI_single'
+subj_list_postfix = 'NC_AD_pMCI_sMCI_single'
 # subj_list_postfix = 'NC_AD_pMCI_sMCI_far'
-subj_list_postfix = 'NC_AD_single'
+#subj_list_postfix = 'NC_AD_single'
+#subj_list_postfix = 'NC_single'
 # subj_list_postfix = 'pMCI_sMCI'
-subj_id_all = np.load('/Users/he/code/vector_neurons_mri/ADNI/ADNI_longitudinal_subj.npy', allow_pickle=True).item()
+#subj_id_all = np.load('/Users/shizhehe/dev/research/vector_neurons_mri/ADNI/ADNI_longitudinal_subj.npy', allow_pickle=True).item()
+subj_id_all = np.load('/scratch/users/shizhehe/ADNI/ADNI_longitudinal_subj.npy', allow_pickle=True).item()
 
 subj_list = []
-subj_test_list = []
-subj_val_list = []
-subj_train_list = []
+
+print(subj_id_all)
+
+print(len(subj_id_all['NC']))
+print(len(subj_id_all['AD']))
 
 for fold in range(5):
+    subj_test_list = []
+    subj_val_list = []
+    subj_train_list = []
+
     for class_name in ['NC', 'AD', 'pMCI', 'sMCI']:
-    # for class_name in ['NC', 'AD']:
+    #for class_name in ['NC', 'AD']:
+    #for class_name in ['NC']:
     # for class_name in ['pMCI', 'sMCI']:
         class_list = subj_id_all[class_name]
         np.random.shuffle(class_list)
@@ -288,6 +338,10 @@ for fold in range(5):
         subj_test_list.extend(class_test)
         subj_train_list.extend(class_train)
         subj_val_list.extend(class_val)
+
+        #subj_test_list = class_test
+        #subj_train_list = class_train
+        #subj_val_list = class_val
 
     if 'single' in subj_list_postfix:
         subj_id_list_train, case_id_list_train = get_subj_single_case_id_list(subj_data, subj_train_list)
