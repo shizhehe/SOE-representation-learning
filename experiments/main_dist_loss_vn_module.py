@@ -20,16 +20,17 @@ from collections import defaultdict
 import random
 import wandb
 
-LOCAL = True
+LOCAL = False
 DEBUG = False
 VNN = True
 
-phase = 'val'
+phase = 'train'
 encoder = 'base'
-week = 18
+week = 19
 normalize_rotation = False
+ 
 normalize_matrix = False
-num_conv = 1
+num_conv = 4
 weight_decay = 1e-4
 
 seed = 10
@@ -54,7 +55,7 @@ use_feature = ['z']
 pos_weight = [1]
 
 epochs = 50
-batch_size = 64
+batch_size = 16
 num_fold = 0
 
 fold = 0 # modified for cross_validation
@@ -84,7 +85,7 @@ if LOCAL:
     ckpt_folder = 'ADNI/ckpt/'
 #name = time_label + f"_fixed_rotation_fold_{fold}"
 name = f"VN_Net_fold_{fold}_fixed_massive_{'normalized' if normalize_matrix else 'unnormalized'}"
-name = f"VN_Net_best_results_prev"
+#name = f"VN_Net_best_results_prev"
 if VNN:
     ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "pretext", name)
 else:
@@ -169,7 +170,7 @@ if phase == 'train':
             "num_conv": num_conv,
             "normalize_rotation_output": normalize_rotation,
             "normalize_matrix": normalize_matrix,
-            "notes": "longer training, huge model, correct loss normalization, training with all samples, no matrix normalization or image normalization at all"
+            "notes": "longer training, massive model, correct loss normalization, added maximization component to loss!!"
         }
     )
 
@@ -240,12 +241,16 @@ def train():
                 z2 = z2.to(device, dtype=torch.float)
                 
                 # compute distance loss between R x z1 and z2
-                distance_loss = model.compute_distance_loss(z1, z1_post_matmul, z2, z2_post_matmul, z1.shape[0])
+                distance_loss, addit_info = model.compute_distance_loss(z1, z1_post_matmul, z2, z2_post_matmul, z1.shape[0])
 
                 loss = distance_loss
+                min_component = addit_info[0]
+                max_component = addit_info[1]
 
                 loss_all_dict['dis'] += distance_loss.item()
                 loss_all_dict['all'] += loss.item()
+                loss_all_dict['min_component'] = min_component.item()
+                loss_all_dict['max_component'] = max_component.item()
 
                 if DEBUG:
                     print(f'Sample distance loss: {distance_loss}')
@@ -305,29 +310,10 @@ def train():
         if phase == 'train':
             wandb.log({
                 "train_dist_loss": loss_all_dict['dis'][0],
-                "validation_dist_loss": stat['dis'][0]
+                "validation_dist_loss": stat['dis'][0],
+                "train_min_component": loss_all_dict['min_component'][0],
+                "train_max_component": loss_all_dict['max_component'][0],
             })
-
-    
-        # plot losses
-        plt.plot(epoch_list, train_dis_loss_list, label='Training Dis. Loss')
-        plt.plot(epoch_list, val_dis_loss_list, label='Validation Dis. Loss')
-        plt.xlabel('Epochs')
-        plt.ylabel('Loss')
-        plt.legend()
-        plt.grid(True)
-        plt.title('Classification and Distance Training/Validation Losses')
-        plt.savefig(os.path.join(ckpt_path, f'separate_losses_fold_{fold}.png'))
-        plt.clf()
-
-        plt.plot(epoch_list, train_total_loss_list, label='Training Total Loss')
-        plt.plot(epoch_list, val_total_loss_list, label='Validation Total Loss')
-        plt.xlabel('Epochs')
-        plt.ylabel('Loss')
-        plt.legend()
-        plt.grid(True)
-        plt.title('Total Losses')
-        plt.savefig(os.path.join(ckpt_path, f'total_losses_fold_{fold}.png'))
 
     # compute training time
     time_elapsed = time.time() - start_time

@@ -476,16 +476,16 @@ class VN_Net(nn.Module):
         diff_matrix_2 = fs1 - post_rot_fs2
         # updated loss version
         distance_loss = torch.norm(diff_matrix_1, p='fro', dim=(1, 2)) + torch.norm(diff_matrix_2, p='fro', dim=(1, 2))
-        return torch.mean(distance_loss)
-        
-        #distance_loss = torch.norm(diff_matrix_1, p='fro') + torch.norm(diff_matrix_2, p='fro')
+        #return torch.mean(distance_loss)        
         #return distance_loss / bs
 
-        # updated loss extra version
-        # also consider maximizing the distance between the matrices fs1 and fs2
+        # updated loss extra version, week 19, avoid embedding to same point and also avoid invariance
+        # also consider maximizing the distance between the matrices fs1 and fs2 to avoid them being embedded to the same thing
         diff_matrix_3 = fs1 - fs2
         maximize_loss = -torch.norm(diff_matrix_3, p='fro', dim=(1, 2))  # negative sign to maximize the distance
 
+        return torch.mean(distance_loss) + 0.5 * torch.mean(maximize_loss), [torch.mean(distance_loss), torch.mean(maximize_loss)]
+        
         # so, what I want to enforce is that the distance between fs1 and fs2 is larger than the distance between fs1 and post_rot_fs2
         # and the distance between fs2 and fs1 is larger than the distance between fs2 and post_rot_fs1
         # this is what has to be added to the loss:
