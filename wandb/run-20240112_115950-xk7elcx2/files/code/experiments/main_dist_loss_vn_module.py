@@ -40,7 +40,10 @@ np.random.seed(seed)
 torch.backends.cudnn.deterministic = True
 
 cuda = 0
-device = torch.device('cuda:' + str(cuda)) if torch.cuda.is_available() else torch.device('cpu')
+device = torch.device('cuda:' + str(cuda))
+
+if LOCAL:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 froze_encoder = False
 
@@ -82,7 +85,7 @@ ckpt_folder = '/scratch/users/shizhehe/ADNI/ckpt/'
 if LOCAL:
     ckpt_folder = 'ADNI/ckpt/'
 #name = time_label + f"_fixed_rotation_fold_{fold}"
-name = f"VN_Net_fold_{fold}_fixed_stronger_lowlr_special_giga_{'normalized' if normalize_matrix else 'unnormalized'}"
+name = f"VN_Net_fold_{fold}_fixed_stronger_lowlr_special_giga{'normalized' if normalize_matrix else 'unnormalized'}"
 #name = f"VN_Net_best_results_prev"
 if VNN:
     ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "pretext", name)
@@ -99,12 +102,13 @@ data_noimg = h5py.File(os.path.join(data_path, noimg_file_name), 'r')
 Data = LongitudinalData(dataset_name, data_path, img_file_name=img_file_name,
                         noimg_file_name=noimg_file_name, subj_list_postfix=subj_list_postfix,
                         data_type=data_type, batch_size=batch_size, num_fold=num_fold,
-                        aug=aug, fold=fold, shuffle=shuffle, pretext=True)
+                        aug=aug, fold=fold, shuffle=shuffle)
 trainDataLoader = Data.trainLoader
 valDataLoader = Data.valLoader
 testDataLoader = Data.testLoader
 
 class_counts = defaultdict(int)
+
 # Iterate over the dataset and count occurrences of each class
 for loader in [trainDataLoader, valDataLoader, testDataLoader]:
     for sample in loader:
@@ -145,7 +149,7 @@ axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
 if phase == 'train':
     print("Initialize Weights and Biases")
-    """wandb.init(
+    wandb.init(
         # set the wandb project for run
         project="vector-neurons-mri",
         
@@ -169,11 +173,11 @@ if phase == 'train':
             "normalize_matrix": normalize_matrix,
             "notes": "longer training, massive model, correct loss normalization, no maximization component to loss!!"
         }
-    )"""
+    )
 
 # ------- train -------
 def train():
-    #wandb.watch(model, log='all') # add gradient visualization
+    wandb.watch(model, log='all') # add gradient visualization
 
     print(f"Total number of parameters in model: {total_params}")
 
@@ -204,7 +208,6 @@ def train():
 
         # go through all data batches in dataset
         for iter, sample in enumerate(trainDataLoader, 0):
-            print(sample)
             for _ in range(1):
             #for rotation in rotations:
                 #if type(rotation) != int:

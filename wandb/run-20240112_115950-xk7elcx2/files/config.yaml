@@ -1,0 +1,90 @@
+wandb_version: 1
+
+model_name:
+  desc: null
+  value: ADNI/ckpt/ADNI/VN_Net/week19/pretext/VN_Net_fold_0_fixed_stronger_lowlr_special_gigaunnormalized
+mode:
+  desc: null
+  value: train
+train_mode:
+  desc: null
+  value: pretext
+week:
+  desc: null
+  value: 19
+fold:
+  desc: null
+  value: 0
+model_params:
+  desc: null
+  value: 892659
+architecture:
+  desc: null
+  value: VN_Net
+learning_rate:
+  desc: null
+  value: 0.0001
+data_subset:
+  desc: null
+  value: NC_AD_pMCI_sMCI
+epochs:
+  desc: null
+  value: 50
+batch_size:
+  desc: null
+  value: 16
+rotations:
+  desc: null
+  value:
+  - 90
+  - 180
+  - 270
+num_conv:
+  desc: null
+  value: 6
+alpha:
+  desc: null
+  value: 1.5
+normalize_rotation_output:
+  desc: null
+  value: false
+normalize_matrix:
+  desc: null
+  value: false
+notes:
+  desc: null
+  value: longer training, massive model, correct loss normalization, no maximization
+    component to loss!!
+_wandb:
+  desc: null
+  value:
+    code_path: code/experiments/main_dist_loss_vn_module.py
+    python_version: 3.9.16
+    cli_version: 0.15.12
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1705089590.187124
+    t:
+      1:
+      - 1
+      - 5
+      - 41
+      - 53
+      - 55
+      2:
+      - 1
+      - 5
+      - 41
+      - 53
+      - 55
+      3:
+      - 1
+      - 16
+      - 23
+      4: 3.9.16
+      5: 0.15.12
+      8:
+      - 4
+      - 5
+      13: darwin-arm64

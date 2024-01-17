@@ -168,7 +168,7 @@ class LongitudinalPairDataset(Dataset):
 class LongitudinalData(object):
     def __init__(self, dataset_name, data_path, img_file_name='ADNI_longitudinal_img.h5',
                 noimg_file_name='ADNI_longitudinal_noimg.h5', subj_list_postfix='NC_AD', data_type='single',
-                aug=False, batch_size=16, num_fold=5, fold=0, shuffle=True, num_workers=0):
+                aug=False, batch_size=16, num_fold=5, fold=0, shuffle=True, num_workers=0, pretext=False):
         if dataset_name == 'ADNI' or dataset_name == 'LAB' or dataset_name == 'NCANDA':
             data_img = h5py.File(os.path.join(data_path, img_file_name), 'r')
             data_noimg = h5py.File(os.path.join(data_path, noimg_file_name), 'r')
@@ -181,6 +181,11 @@ class LongitudinalData(object):
                 subj_id_list_train, case_id_list_train = self.load_idx_list(os.path.join(data_path, 'fold'+str(fold)+'_train_'+subj_list_postfix+'.txt'), 'pair')
                 subj_id_list_val, case_id_list_val = self.load_idx_list(os.path.join(data_path, 'fold'+str(fold)+'_val_'+subj_list_postfix+'.txt'), 'pair')
                 subj_id_list_test, case_id_list_test = self.load_idx_list(os.path.join(data_path, 'fold'+str(fold)+'_test_'+subj_list_postfix+'.txt'), 'pair')
+            
+            if pretext:
+                # for pretext training, train on both train and test split
+                subj_id_list_train = np.concatenate([subj_id_list_train, subj_id_list_test])
+                case_id_list_train = [np.concatenate([case_id_list_train[0], case_id_list_test[0]]), np.concatenate([case_id_list_train[1], case_id_list_test[1]])]
 
             if dataset_name == 'NCANDA':
                 is_label_tp = True

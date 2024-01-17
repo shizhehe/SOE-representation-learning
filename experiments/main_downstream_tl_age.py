@@ -21,8 +21,8 @@ DEBUG = False
 VNN = True
 
 # set before every training!
-week = 16
-num_conv = 2
+week = 19
+num_conv = 4
 normalize_rotation = False
 normalize_matrix = False
 # week 16: don't freeze encoder

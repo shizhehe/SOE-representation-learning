@@ -29,9 +29,9 @@ fold = args.fold
 
 phase = 'train'
 # model setting
-week = 19
-num_conv = 1
-model_ckpt = f'baseline_small_fold_{fold}'
+week = 18
+num_conv = 6
+model_ckpt = f'baseline_huge_fold_{fold}'
 lr = 0.0001
 
 # set seed
@@ -43,7 +43,7 @@ torch.backends.cudnn.deterministic=True
 
 # training setting
 epochs = 50
-batch_size = 64
+batch_size = 16
 num_fold = 5
 shuffle = True
 #aug = True

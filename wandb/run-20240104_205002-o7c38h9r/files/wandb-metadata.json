@@ -1,0 +1,42 @@
+{
+    "os": "macOS-14.1.2-arm64-arm-64bit",
+    "python": "3.9.16",
+    "heartbeatAt": "2024-01-04T12:50:04.313147",
+    "startedAt": "2024-01-04T12:50:02.145835",
+    "docker": null,
+    "cuda": null,
+    "args": [
+        "-fold",
+        "0",
+        "-name",
+        "VN_Net_best_results_prev"
+    ],
+    "state": "running",
+    "program": "/Users/shizhehe/dev/research/vector_neurons_mri/experiments/main_downstream_tl.py",
+    "codePathLocal": "experiments/main_downstream_tl.py",
+    "codePath": "experiments/main_downstream_tl.py",
+    "git": {
+        "remote": "https://github.com/h3seas0n/vector_neurons_mri.git",
+        "commit": "0a24c107b93d9b063fe70c900b1ce43dcab56dc0"
+    },
+    "email": "shizhe.he6@gmail.com",
+    "root": "/Users/shizhehe/dev/research/vector_neurons_mri",
+    "host": "shizhes-mbp",
+    "username": "shizhehe",
+    "executable": "/Users/shizhehe/miniforge3/envs/mri_vnn/bin/python",
+    "cpu_count": 8,
+    "cpu_count_logical": 8,
+    "disk": {
+        "/": {
+            "total": 460.4317207336426,
+            "used": 369.3948516845703
+        }
+    },
+    "gpuapple": {
+        "type": "arm",
+        "vendor": "Apple"
+    },
+    "memory": {
+        "total": 16.0
+    }
+}

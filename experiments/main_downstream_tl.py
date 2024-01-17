@@ -21,10 +21,10 @@ DEBUG = False
 VNN = True
 
 # set before every training!
-week = 18
-num_conv = 4
+week = 19
+num_conv = 1
 normalize_rotation = False
-normalize_matrix = True
+normalize_matrix = False
 # week 16 onward: don't freeze encoder
 froze_encoder = False
 #lr = 0.01
@@ -49,28 +49,34 @@ if LOCAL:
 parser = argparse.ArgumentParser()
 # Adding optional argument
 parser.add_argument("-fold", "--fold", default=0)
+parser.add_argument("-name", "--name", default="VN_Net_fold_{fold}_fixed_moderate_giga")
  
 # Read arguments from command line
 args = parser.parse_args()
  
 fold = args.fold
+base_name = args.name
 print(f"{phase}-ing model on downstream task for fold {fold}")
 
 pretext_fold = 0
 model_name = 'VN_Net'
 #model_ckpt = f'VN_Net_fold_{fold}_fixed_large_normalized'
 #model_ckpt_pretext = f'VN_Net_fold_{pretext_fold}_fixed_large_normalized'
-model_ckpt = f"VN_Net_fold_{fold}_fixed_massive_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
-model_ckpt_pretext = f"VN_Net_fold_{pretext_fold}_fixed_massive_{'normalized' if normalize_matrix else 'unnormalized'}"
+#model_ckpt = f"VN_Net_fold_{fold}_fixed_moderate_giga_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
+#model_ckpt_pretext = f"VN_Net_fold_{pretext_fold}_fixed_moderate_giga_{'normalized' if normalize_matrix else 'unnormalized'}"
+model_ckpt = f"{base_name.format(fold=fold)}_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
+model_ckpt_pretext = f"{base_name.format(fold=pretext_fold)}_{'normalized' if normalize_matrix else 'unnormalized'}"
+
 normalize_matrix = False
 
 latent_size = 1024
+#latent_size = 512
 use_feature = ['z']
 
 pos_weight = [1]
 
 epochs = 50
-batch_size = 16
+batch_size = 64
 num_fold = 5
 
 shuffle = True

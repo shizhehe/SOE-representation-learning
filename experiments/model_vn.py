@@ -88,6 +88,40 @@ class EncoderBlock(nn.Module):
                             
                             nn.Dropout3d(dropout),
                             nn.MaxPool3d(2))
+        elif num_conv == 6:
+            self.conv = nn.Sequential(
+                            nn.Conv3d(in_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+
+                            nn.Dropout3d(dropout),
+                            nn.Conv3d(out_num_ch, out_num_ch, kernel_size=kernel_size, padding=1),
+                            nn.BatchNorm3d(out_num_ch),
+                            conv_act_layer,
+                            
+                            nn.Dropout3d(dropout),
+                            nn.MaxPool3d(2))
+
         else:
             raise ValueError('Number of conv can only be 1 or 2')
 
@@ -470,7 +504,7 @@ class VN_Net(nn.Module):
             loss = nn.BCEWithLogitsLoss(pos_weight=weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
             return loss, F.sigmoid(pred)
 
-    def compute_distance_loss(self, fs1, post_rot_fs1, fs2, post_rot_fs2, bs):      
+    def compute_distance_loss(self, fs1, post_rot_fs1, fs2, post_rot_fs2, bs, alpha=1):      
         # Calculate the Frobenius norm (L2 norm) of the difference between the matrices
         diff_matrix_1 = fs2 - post_rot_fs1
         diff_matrix_2 = fs1 - post_rot_fs2
@@ -482,9 +516,10 @@ class VN_Net(nn.Module):
         # updated loss extra version, week 19, avoid embedding to same point and also avoid invariance
         # also consider maximizing the distance between the matrices fs1 and fs2 to avoid them being embedded to the same thing
         diff_matrix_3 = fs1 - fs2
+        diff_matrix_4 = post_rot_fs1 - post_rot_fs2
         maximize_loss = -torch.norm(diff_matrix_3, p='fro', dim=(1, 2))  # negative sign to maximize the distance
 
-        return torch.mean(distance_loss) + 0.5 * torch.mean(maximize_loss), [torch.mean(distance_loss), torch.mean(maximize_loss)]
+        return torch.mean(distance_loss) + alpha * torch.mean(maximize_loss), [torch.mean(distance_loss), torch.mean(maximize_loss)]
         
         # so, what I want to enforce is that the distance between fs1 and fs2 is larger than the distance between fs1 and post_rot_fs2
         # and the distance between fs2 and fs1 is larger than the distance between fs2 and post_rot_fs1

@@ -15,15 +15,17 @@ import h5py
 import matplotlib.pyplot as plt
 import argparse
 import random
+import wandb
 
 LOCAL = False
 DEBUG = False
 
 phase = 'val'
-week = 18
-num_conv = 4
-normalize_matrix = True
+week = 19
+num_conv = 1
+normalize_matrix = False
 normalize_rotation = False
+froze_encoder = True
 
 # set seed
 seed = 10
@@ -50,8 +52,6 @@ device = torch.device('cuda:'+ str(cuda))
 if LOCAL:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-froze_encoder = False
-
 # model setting
 latent_size = 1024
 use_feature = ['z']
@@ -59,16 +59,17 @@ use_feature = ['z']
 pos_weight = [1]
 
 # training setting
-batch_size = 16
+batch_size = 64
 num_fold = 5
 shuffle = True
 aug = False 
 
 
 model_ckpt = f"VN_Net_fold_{fold}_range_massive_{'normalized' if normalize_matrix else 'unnormalized'}"
-model_ckpt = f"baseline_massive_fold_{fold}"
-#model_name = 'VN_Net'
-model_name = 'CLS'
+model_ckpt = f"VN_Net_fold_{fold}_best_results_prev_{'normalized' if normalize_matrix else 'unnormalized'}"
+#model_ckpt = f'baseline_small_fold_{fold}'
+model_name = 'VN_Net'
+#model_name = 'CLS'
 normalize_matrix = False
 
 
@@ -106,6 +107,27 @@ print("Loading Data")
 
 data_img = h5py.File(os.path.join(data_path, img_file_name), 'r')
 data_noimg = h5py.File(os.path.join(data_path, noimg_file_name), 'r')
+
+print("Initialize Weights and Biases")
+wandb.init(
+    # set the wandb project for run
+    project="vector-neurons-mri",
+    
+    # track hyperparameters and run metadata
+    config={
+        "model_name": ckpt_path,
+        "mode": phase,
+        "train_mode": "pretext",
+        "week": week,
+        "fold": fold,
+        "architecture": model_name,
+        "data_subset": subj_list_postfix,
+        "batch_size": batch_size,
+        "num_conv": num_conv,
+        "normalize_rotation_output": normalize_rotation,
+        "normalize_matrix": normalize_matrix
+    }
+)
 
 # define dataset
 Data = LongitudinalData(dataset_name, data_path, img_file_name=img_file_name,

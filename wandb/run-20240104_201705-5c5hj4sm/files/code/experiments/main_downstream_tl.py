@@ -9,62 +9,79 @@ import yaml
 import pdb
 import tqdm
 from model_vn import *
+from so3_transformations.transformations import *
 from util import *
+import h5py
 import matplotlib.pyplot as plt
 import argparse
 import wandb
-import h5py
 
-LOCAL = False
+LOCAL = True
 DEBUG = False
-VNN = False
+VNN = True
 
-parser = argparse.ArgumentParser()
-# Adding optional argument
-parser.add_argument("-fold", "--fold", default=0)
-# Read arguments from command line
-args = parser.parse_args()
-fold = args.fold
-#fold = 0
-
-phase = 'train'
-# model setting
+# set before every training!
 week = 19
 num_conv = 1
-model_ckpt = f'baseline_small_fold_{fold}'
-lr = 0.0001
+normalize_rotation = False
+normalize_matrix = False
+# week 16 onward: don't freeze encoder
+froze_encoder = True
+#lr = 0.01
+#lr = 0.0001
+lr = 0.001
+#lr = 0.00001
 
-# set seed
+phase = 'train'
+
 seed = 10
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 np.random.seed(seed)
-torch.backends.cudnn.deterministic=True
+torch.backends.cudnn.deterministic = True
 
-# training setting
-epochs = 50
-batch_size = 64
-num_fold = 5
-shuffle = True
-#aug = True
-aug = False
-
-# cuda
 cuda = 0
-device = torch.device('cuda:'+ str(cuda))
+device = torch.device('cuda:' + str(cuda))
 
 if LOCAL:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-froze_encoder = False
+parser = argparse.ArgumentParser()
+# Adding optional argument
+parser.add_argument("-fold", "--fold", default=0)
+parser.add_argument("-name", "--name", default="VN_Net_fold_{fold}_fixed_moderate_giga")
+ 
+# Read arguments from command line
+args = parser.parse_args()
+ 
+fold = args.fold
+base_name = args.name
+print(f"{phase}-ing model on downstream task for fold {fold}")
 
-model_name = 'CLS'  
+pretext_fold = 0
+model_name = 'VN_Net'
+#model_ckpt = f'VN_Net_fold_{fold}_fixed_large_normalized'
+#model_ckpt_pretext = f'VN_Net_fold_{pretext_fold}_fixed_large_normalized'
+#model_ckpt = f"VN_Net_fold_{fold}_fixed_moderate_giga_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
+#model_ckpt_pretext = f"VN_Net_fold_{pretext_fold}_fixed_moderate_giga_{'normalized' if normalize_matrix else 'unnormalized'}"
+model_ckpt = f"{base_name.format(fold=fold)}_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
+model_ckpt_pretext = f"{base_name.format(fold=pretext_fold)}_{'normalized' if normalize_matrix else 'unnormalized'}"
+
+normalize_matrix = False
+
 latent_size = 1024
 use_feature = ['z']
 
 pos_weight = [1]
 
-# dataset
+epochs = 50
+batch_size = 64
+num_fold = 5
+
+shuffle = True
+#aug = True
+aug = False
+
 data_type = 'single'
 dataset_name = 'ADNI'
 data_path = '/scratch/users/shizhehe/ADNI/'
@@ -77,60 +94,71 @@ subj_list_postfix = 'NC_AD'
 if LOCAL:
     data_path = 'ADNI/'
 
-# time
 localtime = time.localtime(time.time())
 time_label = str(localtime.tm_year) + '_' + str(localtime.tm_mon) + '_' + str(localtime.tm_mday) + '_' + str(localtime.tm_hour) + '_' + str(localtime.tm_min)
 
-# checkpoints
 ckpt_folder = '/scratch/users/shizhehe/ADNI/ckpt/'
 if LOCAL:
     ckpt_folder = 'ADNI/ckpt/'
 
-ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f'week{week}', "classification", model_ckpt)
+saved_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "pretext", model_ckpt_pretext)
+ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "classification", f"{model_ckpt}")
 if not os.path.exists(ckpt_path):
     os.makedirs(ckpt_path)
-
-if LOCAL:
-    ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, 'baseline_rig_eval_retrained')
 
 print("Loading Data")
 
 data_img = h5py.File(os.path.join(data_path, img_file_name), 'r')
 data_noimg = h5py.File(os.path.join(data_path, noimg_file_name), 'r')
 
-# define dataset
 Data = LongitudinalData(dataset_name, data_path, img_file_name=img_file_name,
-            noimg_file_name=noimg_file_name, subj_list_postfix=subj_list_postfix,
-            data_type=data_type, batch_size=batch_size, num_fold=num_fold,
-            aug=aug, fold=fold, shuffle=shuffle)
+                        noimg_file_name=noimg_file_name, subj_list_postfix=subj_list_postfix,
+                        data_type=data_type, batch_size=batch_size, num_fold=num_fold,
+                        aug=aug, fold=fold, shuffle=shuffle)
 trainDataLoader = Data.trainLoader
 valDataLoader = Data.valLoader
 testDataLoader = Data.testLoader
 
+from collections import defaultdict
+# Initialize a dictionary to store class counts
+class_counts = defaultdict(int)
+
+# Iterate over the dataset and count occurrences of each class
+for loader in [trainDataLoader, valDataLoader, testDataLoader]:
+    for sample in loader:
+        labels = sample['label']
+        for label in labels:
+            label = label.item()
+            class_counts[label] += 1
+
+print(dict(class_counts))
+
 print("Data loaded!!!")
 
-# define model
 if LOCAL:
-    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=None, num_conv=num_conv).to(device)
+    if model_name == 'VN_Net':
+        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder='base', dropout=(froze_encoder == False), gpu=None, normalize_output=normalize_matrix).to(device)
 else:
-    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=device, num_conv=num_conv).to(device)
-
+    if model_name == 'VN_Net':
+        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder='base', dropout=False, gpu=device, normalize_output=normalize_matrix).to(device)
 print("Model set!!!")
 
-# froze encoder
 if froze_encoder:
     for param in model.encoder.parameters():
         param.requires_grad = False
+    print("Froze encoder!!!")
 
-# define optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4, amsgrad=True)
-# optimizer = torch.optim.SGD(model.parameters(), lr=config['lr'], momentum=0.9, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-5)
+#optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4, amsgrad=True)
+#optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4) # SGD doesn't learn well
+optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4, amsgrad=True)
+# try different lr scheduler
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-5, verbose=True)
+#scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5, verbose=True)
 
-if phase != 'train':
+if phase == 'train':
+    [model], start_epoch = load_checkpoint_by_key([model], saved_path, ['model'], device)
+else:
     [model], start_epoch = load_checkpoint_by_key([model], ckpt_path, ['model'], device)
-
-start_epoch = -1
 
 total_params = sum(p.numel() for p in model.parameters()) # if p.requires_grad)
 print(f"Total number of parameters in model: {total_params}")
@@ -145,7 +173,7 @@ if phase == 'train':
         config={
             "model_name": ckpt_path,
             "mode": phase,
-            "train_mode": "baseline for classification!",
+            "train_mode": "downstream classification",
             "week": week,
             "fold": fold,
             "architecture": model_name,
@@ -155,7 +183,7 @@ if phase == 'train':
             "epochs": epochs,
             "batch_size": batch_size,
             "froze_encoder": froze_encoder,
-            "notes": f"downstream task, of week {week}, of {ckpt_path}"
+            "notes": f"downstream task, of week {week}, of {saved_path}"
         }
     )
     wandb.watch(model, log='all') # add gradient visualization
@@ -168,18 +196,23 @@ def train():
     monitor_metric_best = -1
     start_time = time.time()
 
-    epoch_list = range(start_epoch + 1, epochs)
+    epoch_list = range(start_epoch + 1, start_epoch + epochs)
     # save losses for plotting
+    train_dis_loss_list = []
     train_cls_loss_list = []
     train_total_loss_list = []
 
+    train_bacc_list = []
+    val_bacc_list = []
+
+    val_dis_loss_list = []
     val_cls_loss_list = []
     val_total_loss_list = []
     
     # iterate through epochs
-    for epoch in range(start_epoch + 1, epochs):
+    for epoch in range(start_epoch + 1, start_epoch + epochs):
         model.train()
-        loss_all_dict = {'all': 0, 'cls': 0.}
+        loss_all_dict = {'all': 0, 'dis': 0., 'cls': 0.} # dis is distance loss, cls is classification loss, all is total loss
         global_iter0 = global_iter
 
         pred_list = [] 
@@ -191,26 +224,27 @@ def train():
         for iter, sample in enumerate(trainDataLoader, 0):
             global_iter += 1
             img1 = sample['img'].to(device, dtype=torch.float).unsqueeze(1)
-
+            
             if subj_list_postfix == 'C_single':
                 label = sample['age'].to(device, dtype=torch.float)
             else:
                 label = sample['label'].to(device, dtype=torch.float)
 
-            # if remainder of data isn't enough for batch
             if DEBUG:
                 print(f"Input batch shape: {img1.shape}")
                 print(f'Size: {img1.shape[0]}, batch_size: {batch_size}')
-            if img1.shape[0] <= batch_size // 2:
-                print("Size of data too small!")
-                break
+            #if img1.shape[0] <= batch_size // 2:
+            #    print("Size of data too small!")
+            #    break
 
-            # run model
+            # run model to fetch predictions
             pred, _ = model.forward_single(img1)
-
+            
+            # compute distance loss between R x z1 and z2
             loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
-
+        
             loss = loss_cls
+
             loss_all_dict['cls'] += loss_cls.item()
             loss_all_dict['all'] += loss.item()
 
@@ -222,7 +256,7 @@ def train():
             label_list.append(label.detach().cpu().numpy())
 
             loss.backward()
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             for name, param in model.named_parameters():
                 try:
@@ -236,8 +270,10 @@ def train():
 
             if global_iter % 1 == 0:
                 # pdb.set_trace()
-                print('Epoch[%3d], iter[%3d]: loss=[%.4f], cls=[%.4f]' \
-                        % (epoch, iter, loss.item(), loss_cls.item()))
+                print('Epoch[%3d], iter[%3d]: loss=[%.4f], cls=[%.4f], dis=[%.4f]' \
+                        % (epoch, iter, loss.item(), loss_cls.item(), 0))
+
+        #scheduler.step()
 
         # save train result
         num_iter = global_iter - global_iter0
@@ -245,20 +281,23 @@ def train():
             loss_all_dict[key] /= num_iter
         save_result_stat(loss_all_dict, {'ckpt_path': ckpt_path}, info='epoch[%2d]'%(epoch))
         print(loss_all_dict)
+        train_dis_loss_list.append(loss_all_dict['dis'])
         train_cls_loss_list.append(loss_all_dict['cls'])
         train_total_loss_list.append(loss_all_dict['all'])
 
         pred_list = np.concatenate(pred_list, axis=0) # pred already sigmoid
         label_list = np.concatenate(label_list, axis=0)
         train_stat = compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix)
+        train_bacc_list.append(train_stat['bacc'])
 
         # validation
-        # pdb.set_trace()
         stat = evaluate(phase='val', set='val', save_res=False)
         monitor_metric = stat['bacc']
+        #monitor_metric = stat['f1']
         scheduler.step(monitor_metric)
         save_result_stat(stat, {'ckpt_path': ckpt_path}, info='val')
         print(stat)
+        val_bacc_list.append(stat['bacc'])
         val_cls_loss_list.append(stat['cls'])
         val_total_loss_list.append(stat['all'])
 
@@ -283,6 +322,7 @@ def train():
                 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(), \
                 'model': model.state_dict()}
         print(optimizer.param_groups[0]['lr'])
+        #print(scheduler.get_last_lr())
         save_checkpoint(state, is_best, ckpt_path)
     
     # plot losses
@@ -322,7 +362,6 @@ def evaluate(phase='val', set='val', save_res=True, info='', wandb_log=False):
             raise ValueError('Undefined loader')
 
     zs_file_path = os.path.join(ckpt_path, 'result_train', 'results_allbatch.h5')
-    print(zs_file_path)
     if info == 'dataset':
         if not os.path.exists(zs_file_path):
             raise ValueError('Not existing zs for training batches!')
@@ -343,9 +382,10 @@ def evaluate(phase='val', set='val', save_res=True, info='', wandb_log=False):
 
     loss_all_dict = {'all': 0, 'dis': 0., 'cls': 0.}
     img1_list = []
+    img2_list = []
     label_list = []
-    recon1_list = []
     z1_list = []
+    z2_list = []
     pred_list = []
 
     with torch.no_grad():
@@ -360,8 +400,8 @@ def evaluate(phase='val', set='val', save_res=True, info='', wandb_log=False):
             pred, _ = model.forward_single(img1)
 
             loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
-
             loss = loss_cls
+
             loss_all_dict['cls'] += loss_cls.item()
             loss_all_dict['all'] += loss.item()
 
@@ -401,5 +441,5 @@ if phase == 'train':
     [model], start_epoch = load_checkpoint_by_key([model], ckpt_path, ['model'], device)
     stat = evaluate(phase='test', set='test', save_res=True, wandb_log=True)
 else:
-    stat = evaluate(phase='test', set='test', save_res=True, info='batch')
+    stat = evaluate(phase='test', set='test', save_res=True, wandb_log=False)
     print(stat)

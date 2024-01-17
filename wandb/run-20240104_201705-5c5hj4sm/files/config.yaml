@@ -1,0 +1,74 @@
+wandb_version: 1
+
+model_name:
+  desc: null
+  value: ADNI/ckpt/ADNI/VN_Net/week19/classification/VN_Net_best_results_prev_unnormalized_frozen
+mode:
+  desc: null
+  value: train
+train_mode:
+  desc: null
+  value: downstream classification
+week:
+  desc: null
+  value: 19
+fold:
+  desc: null
+  value: '0'
+architecture:
+  desc: null
+  value: VN_Net
+model_params:
+  desc: null
+  value: 163187
+learning_rate:
+  desc: null
+  value: 0.001
+data_subset:
+  desc: null
+  value: NC_AD
+epochs:
+  desc: null
+  value: 50
+batch_size:
+  desc: null
+  value: 64
+froze_encoder:
+  desc: null
+  value: true
+notes:
+  desc: null
+  value: downstream task, of week 19, of ADNI/ckpt/ADNI/VN_Net/week19/pretext/VN_Net_best_results_prev_unnormalized
+_wandb:
+  desc: null
+  value:
+    code_path: code/experiments/main_downstream_tl.py
+    python_version: 3.9.16
+    cli_version: 0.15.12
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1704370625.560402
+    t:
+      1:
+      - 1
+      - 5
+      - 41
+      - 53
+      - 55
+      2:
+      - 1
+      - 5
+      - 41
+      - 53
+      - 55
+      3:
+      - 1
+      - 16
+      - 23
+      4: 3.9.16
+      5: 0.15.12
+      8:
+      - 4
+      - 5
+      13: darwin-arm64
