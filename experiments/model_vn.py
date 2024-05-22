@@ -6,15 +6,12 @@ import numpy as np
 import math
 import sys
 import pdb
+import monai
+from monai.networks.nets import ViT
 from torchvision.ops.misc import MLP, Permute
-import torchvision
-from torchvision.models.swin_transformer import PatchMerging, _log_api_usage_once, SwinTransformerBlock
+
 import vn_layers
-from functools import partial
-from typing import Any, Callable, List, Optional
-
-
-from model import Encoder as EncoderBase
+from networks import SwinClassifier
 
 
 class EncoderBlock(nn.Module):
@@ -335,11 +332,36 @@ class VN_Module(nn.Module):
         return self.fc(x)
 
 class CLS(nn.Module):
-    def __init__(self, latent_size=1024, use_feature=['z', 'delta_z'], dropout=False, gpu=None, num_conv=1):
+    def __init__(self, latent_size=1024, use_feature=['z', 'delta_z'], dropout=False, gpu=None, num_conv=1, encoder='base', ViT_dims=(1024, 6, 6, 16), feature_size=24, kernel_size=3):
         super(CLS, self).__init__()
         self.gpu = gpu
         self.use_feature = use_feature
-        self.encoder = EncoderVN(in_num_ch=1, inter_num_ch=16, num_conv=num_conv, dropout=dropout, normalize_output=False)
+        if encoder == 'base':
+            self.encoder = EncoderVN(in_num_ch=1, inter_num_ch=16, num_conv=num_conv, dropout=dropout, normalize_output=False, kernel_size=kernel_size)
+        elif encoder == 'ViT':
+            self.encoder = ViT(
+                in_channels=1,
+                img_size = (64, 64, 64),
+                patch_size = (ViT_dims[3], ViT_dims[3], ViT_dims[3]),
+                mlp_dim = ViT_dims[0],
+                num_layers = ViT_dims[1],
+                num_heads = ViT_dims[2],
+                hidden_size = latent_size,
+                proj_type='conv',
+                pos_embed_type='sincos', 
+                classification=False
+            )
+        elif encoder == 'SWIN':
+            # https://developer.nvidia.com/blog/novel-transformer-model-achieves-state-of-the-art-benchmarks-in-3d-medical-image-analysis/
+            # https://docs.monai.io/en/stable/_modules/monai/networks/nets/swin_unetr.html
+            self.encoder = SwinClassifier(
+                #img_size = (64, 64, 64),
+                in_channels = 1,
+                out_channels = 1,
+                spatial_dims=3,
+                feature_size=feature_size
+            )
+        self.encoder_name = encoder
         self.classifier = Classifier(latent_size=len(use_feature)*latent_size, inter_num_ch=64)
 
     def forward(self, img1, img2, interval):
@@ -360,6 +382,9 @@ class CLS(nn.Module):
 
     def forward_single(self, img1):
         z1 = self.encoder(img1)
+        
+        if self.encoder_name == "ViT":
+            z1 = z1[0][:, 0]
         z1 = z1.view(img1.shape[0], -1)
         pred = self.classifier(z1)
         return pred, z1
@@ -381,18 +406,58 @@ class CLS(nn.Module):
                     label = (label > 0).double()
             elif dataset_name == 'NCANDA':
                 label = (label > 0).double()
+            elif dataset_name == 'RADFUSION':
+                label = label
             else:
                 raise ValueError('Not supported!')
             loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
             return loss, F.sigmoid(pred)
+        
+    def compute_classification_invariance_loss(self, pred, label, z1, z2, pos_weight=torch.tensor([2.]), dataset_name='ADNI', postfix='NC_AD', task='classification', alpha=0.5):
+        if task == 'age':
+            loss = nn.MSELoss()(pred.squeeze(1), label)
+            return loss, pred
+        else:
+            # pdb.set_trace()
+            if dataset_name == 'ADNI':
+                if  'NC_AD' in postfix:
+                    label = label / 2
+                elif 'pMCI_sMCI' in postfix:
+                    label = label - 3
+            elif dataset_name == 'LAB':
+                if 'C_E_HE' in postfix:
+                    label = (label > 0).double()
+            elif dataset_name == 'NCANDA':
+                label = (label > 0).double()
+            elif dataset_name == 'RADFUSION':
+                label = label
+            else:
+                raise ValueError('Not support!')
+            
+            # calculate the weight based on class imbalance
+            # based on pytroch recommended weight computation: pos_weight to be a ratio between the negative counts and the positive counts for each classpos_weight to be a ratio between the negative counts and the positive counts for each class
+            num_samples = len(label)
+            positive_samples = sum(label)
+            positive_samples = 1 if positive_samples == 0 else positive_samples
+            negative_samples = num_samples - positive_samples
+            weight = torch.tensor([negative_samples / positive_samples])
+
+            loss = nn.BCEWithLogitsLoss(pos_weight=weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
+            invariance_loss = alpha * nn.MSELoss()(z1, z2)
+            loss += invariance_loss
+            return loss, invariance_loss, F.sigmoid(pred)
+        
 
 class VN_Net(nn.Module):
-    def __init__(self, latent_size=1024, use_feature=['z', 'delta_z'], num_conv=1, encoder='base', vn_module = False, dropout=False, gpu=None, normalize_output=False):
+    def __init__(self, latent_size=1024, use_feature=['z', 'delta_z'], num_conv=1, encoder='base', vn_module = False, dropout=False, gpu=None, normalize_output=False, ViT_dims=(1024, 6, 6, 16), feature_size=24):
+        # ViT_dims is the mlp dimension and number of layers for the ViT model
         super(VN_Net, self).__init__()
         self.gpu = gpu
         self.use_feature = use_feature
         self.vn_module = None
         self.normalize_output = normalize_output
+
+        self.encoder_name = encoder
 
         #if encoder == 'base':
         #    self.encoder = EncoderBase(in_num_ch=1, inter_num_ch=16, num_conv=num_conv, dropout=dropout)
@@ -400,22 +465,28 @@ class VN_Net(nn.Module):
         if encoder == 'base':
             self.encoder = EncoderVN(in_num_ch=1, inter_num_ch=16, num_conv=num_conv, dropout=dropout, normalize_output=normalize_output)
         elif encoder == 'ViT':
-            #self.encoder = torchvision.models.vit_b_16(weights=None, image_size=64)
-            # https://github.com/junyuchen245/ViT-V-Net_for_3D_Image_Registration_Pytorch
-            pass
+            self.encoder = ViT(
+                in_channels=1,
+                img_size = (64, 64, 64),
+                patch_size = (ViT_dims[3], ViT_dims[3], ViT_dims[3]),
+                mlp_dim = ViT_dims[0],
+                num_layers = ViT_dims[1],
+                num_heads = ViT_dims[2],
+                hidden_size = latent_size,
+                proj_type='conv',
+                pos_embed_type='sincos', 
+                classification=False # to get true hidden state output
+            )
         elif encoder == 'SWIN':
-            # ISSUE: have to change the input size to 64x64x64, not 224x224x3!!
-            # https://github.com/microsoft/Swin3D
-            #self.encoder = SwinTransformer(
-            #    patch_size=[4, 4],
-            #    embed_dim=128,
-            #    depths=[2, 2, 18, 2],
-            #    num_heads=[4, 8, 16, 32],
-            #    window_size=[7, 7],
-            #    stochastic_depth_prob=0.5,
-            #    image_size=64
-            #)
-            pass
+            # https://developer.nvidia.com/blog/novel-transformer-model-achieves-state-of-the-art-benchmarks-in-3d-medical-image-analysis/
+            # https://docs.monai.io/en/stable/_modules/monai/networks/nets/swin_unetr.html
+            self.encoder = SwinClassifier(
+                #img_size = (64, 64, 64),
+                in_channels = 1,
+                out_channels = 2,
+                spatial_dims=3,
+                feature_size=feature_size
+            )
 
         if vn_module:
             self.vn_module = VN_Module(latent_size=latent_size, inter_num_ch=64)
@@ -440,21 +511,28 @@ class VN_Net(nn.Module):
 
     def forward_single(self, img1):
         z1 = self.encoder(img1)
+        if self.encoder_name == "ViT":
+            z1 = z1[0][:, 0]
         z1 = z1.view(img1.shape[0], -1)
         pred = self.classifier(z1)
         return pred, z1
+    
+    def forward_encoder(self, img1):
+        return self.encoder(img1)
 
     def forward_single_fs(self, img1):
         #print(f'Input shape: {img1.shape}')
-
-        z1 = self.encoder(img1) # [bs,16,4,4,4]
+        z1 = self.encoder(img1) # [bs,16,4,4,4], for ViT [bs, 768]
         #print(f'Encoder output shape: {z1.shape}')
 
-        z1_reshaped = z1.view(-1, 16, 16, 4) # [bs,16,16,4]
-        #print(f'Encoder output shape after reshape: {z1_reshaped.shape}')
-        if self.vn_module is None:
-            return z1_reshaped
-        
+        if self.encoder_name == "base":
+            z1_reshaped = z1.view(-1, 16, 16, 4) # [bs,16,16,4]
+            #print(f'Encoder output shape after reshape: {z1_reshaped.shape}')
+            if self.vn_module is None:
+                return z1_reshaped
+        elif self.encoder_name == "ViT":
+            z1 = z1[0][:, 0]
+
         # don't need this, need this to flatten in order to pass into a FC Network, but could keep for consistency
         z1_flattened = z1.view(img1.shape[0], -1, 1) # [bs,n,1]
         # n dimensional 1D vector, as in paper
@@ -462,7 +540,8 @@ class VN_Net(nn.Module):
         #print(f'Encoder output shape as n dimensional 1D vector: {z1_flattened.shape}')
 
         # reshape to 2D tensor for VN module
-        z1_flattened_2d = z1_flattened.view(-1, 1) # [bs * n, 1]
+        #z1_flattened_2d = z1_flattened.view(-1, 1) # [bs * n, 1]
+        z1_flattened_2d = z1_flattened.reshape(-1, 1) # [bs * n, 1]
         
         # use the VN module to get the nx3 output
         z1_out_2d = self.vn_module(z1_flattened_2d) # [bs * n, 3]
@@ -474,6 +553,40 @@ class VN_Net(nn.Module):
 
         return z1_out
 
+    def compute_classification_invariance_loss(self, pred, label, z1, z2, pos_weight=torch.tensor([2.]), dataset_name='ADNI', postfix='NC_AD', task='classification', alpha=0.5):
+        if task == 'age':
+            loss = nn.MSELoss()(pred.squeeze(1), label)
+            return loss, pred
+        else:
+            # pdb.set_trace()
+            if dataset_name == 'ADNI':
+                if  'NC_AD' in postfix:
+                    label = label / 2
+                elif 'pMCI_sMCI' in postfix:
+                    label = label - 3
+            elif dataset_name == 'LAB':
+                if 'C_E_HE' in postfix:
+                    label = (label > 0).double()
+            elif dataset_name == 'NCANDA':
+                label = (label > 0).double()
+            elif dataset_name == 'RADFUSION':
+                label = label
+            else:
+                raise ValueError('Not support!')
+            
+            # calculate the weight based on class imbalance
+            # based on pytroch recommended weight computation: pos_weight to be a ratio between the negative counts and the positive counts for each classpos_weight to be a ratio between the negative counts and the positive counts for each class
+            num_samples = len(label)
+            positive_samples = sum(label)
+            positive_samples = 1 if positive_samples == 0 else positive_samples
+            negative_samples = num_samples - positive_samples
+            weight = torch.tensor([negative_samples / positive_samples])
+
+            loss = nn.BCEWithLogitsLoss(pos_weight=weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
+            invariance_loss = alpha * nn.MSELoss()(z1, z2)
+            loss += invariance_loss
+            return loss, invariance_loss, F.sigmoid(pred)
+        
     def compute_classification_loss(self, pred, label, pos_weight=torch.tensor([2.]), dataset_name='ADNI', postfix='NC_AD', task='classification'):
         if task == 'age':
             loss = nn.MSELoss()(pred.squeeze(1), label)
@@ -490,6 +603,8 @@ class VN_Net(nn.Module):
                     label = (label > 0).double()
             elif dataset_name == 'NCANDA':
                 label = (label > 0).double()
+            elif dataset_name == 'RADFUSION':
+                label = label
             else:
                 raise ValueError('Not support!')
             
@@ -502,6 +617,7 @@ class VN_Net(nn.Module):
             weight = torch.tensor([negative_samples / positive_samples])
 
             loss = nn.BCEWithLogitsLoss(pos_weight=weight.to(self.gpu, dtype=torch.float))(pred.squeeze(1), label)
+
             return loss, F.sigmoid(pred)
 
     def compute_distance_loss(self, fs1, post_rot_fs1, fs2, post_rot_fs2, bs, alpha=1):      
@@ -517,7 +633,7 @@ class VN_Net(nn.Module):
         # also consider maximizing the distance between the matrices fs1 and fs2 to avoid them being embedded to the same thing
         diff_matrix_3 = fs1 - fs2
         diff_matrix_4 = post_rot_fs1 - post_rot_fs2
-        maximize_loss = -torch.norm(diff_matrix_3, p='fro', dim=(1, 2))  # negative sign to maximize the distance
+        maximize_loss = 1 / torch.norm(diff_matrix_3, p='fro', dim=(1, 2))  # maximize the distance
 
         return torch.mean(distance_loss) + alpha * torch.mean(maximize_loss), [torch.mean(distance_loss), torch.mean(maximize_loss)]
         
@@ -529,110 +645,3 @@ class VN_Net(nn.Module):
         # maximize_loss = -torch.norm(diff_matrix_3, p='fro', dim=(1, 2)) + torch.norm(diff_matrix_4, p='fro', dim=(1, 2)) - torch.norm(diff_matrix_5, p='fro', dim=(1, 2))
 
         #return torch.mean(distance_loss) + 0.1 * torch.mean(maximize_loss)
-        
-class SwinTransformer(nn.Module):
-    """
-    Implements Swin Transformer from the `"Swin Transformer: Hierarchical Vision Transformer using
-    Shifted Windows" <https://arxiv.org/pdf/2103.14030>`_ paper.
-    Args:
-        patch_size (List[int]): Patch size.
-        embed_dim (int): Patch embedding dimension.
-        depths (List(int)): Depth of each Swin Transformer layer.
-        num_heads (List(int)): Number of attention heads in different layers.
-        window_size (List[int]): Window size.
-        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. Default: 4.0.
-        dropout (float): Dropout rate. Default: 0.0.
-        attention_dropout (float): Attention dropout rate. Default: 0.0.
-        stochastic_depth_prob (float): Stochastic depth rate. Default: 0.1.
-        num_classes (int): Number of classes for classification head. Default: 1000.
-        block (nn.Module, optional): SwinTransformer Block. Default: None.
-        norm_layer (nn.Module, optional): Normalization layer. Default: None.
-        downsample_layer (nn.Module): Downsample layer (patch merging). Default: PatchMerging.
-    """
-
-    def __init__(
-        self,
-        patch_size: List[int],
-        embed_dim: int,
-        depths: List[int],
-        num_heads: List[int],
-        window_size: List[int],
-        mlp_ratio: float = 4.0,
-        dropout: float = 0.0,
-        attention_dropout: float = 0.0,
-        stochastic_depth_prob: float = 0.1,
-        num_classes: int = 1000,
-        norm_layer: Optional[Callable[..., nn.Module]] = None,
-        block: Optional[Callable[..., nn.Module]] = None,
-        downsample_layer: Callable[..., nn.Module] = PatchMerging,
-    ):
-        super().__init__()
-        _log_api_usage_once(self)
-        self.num_classes = num_classes
-
-        if block is None:
-            block = SwinTransformerBlock
-        if norm_layer is None:
-            norm_layer = partial(nn.LayerNorm, eps=1e-5)
-
-        layers: List[nn.Module] = []
-        # split image into non-overlapping patches
-        layers.append(
-            nn.Sequential(
-                nn.Conv2d(
-                    3, embed_dim, kernel_size=(patch_size[0], patch_size[1]), stride=(patch_size[0], patch_size[1])
-                ),
-                Permute([0, 2, 3, 1]),
-                norm_layer(embed_dim),
-            )
-        )
-
-        total_stage_blocks = sum(depths)
-        stage_block_id = 0
-        # build SwinTransformer blocks
-        for i_stage in range(len(depths)):
-            stage: List[nn.Module] = []
-            dim = embed_dim * 2**i_stage
-            for i_layer in range(depths[i_stage]):
-                # adjust stochastic depth probability based on the depth of the stage block
-                sd_prob = stochastic_depth_prob * float(stage_block_id) / (total_stage_blocks - 1)
-                stage.append(
-                    block(
-                        dim,
-                        num_heads[i_stage],
-                        window_size=window_size,
-                        shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],
-                        mlp_ratio=mlp_ratio,
-                        dropout=dropout,
-                        attention_dropout=attention_dropout,
-                        stochastic_depth_prob=sd_prob,
-                        norm_layer=norm_layer,
-                    )
-                )
-                stage_block_id += 1
-            layers.append(nn.Sequential(*stage))
-            # add patch merging layer
-            if i_stage < (len(depths) - 1):
-                layers.append(downsample_layer(dim, norm_layer))
-        self.features = nn.Sequential(*layers)
-
-        num_features = embed_dim * 2 ** (len(depths) - 1)
-        self.norm = norm_layer(num_features)
-        self.permute = Permute([0, 3, 1, 2])  # B H W C -> B C H W
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.flatten = nn.Flatten(1)
-        self.head = nn.Linear(num_features, num_classes)
-
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.02)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    def forward(self, x):
-        x = self.features(x)
-        x = self.norm(x)
-        x = self.permute(x)
-        x = self.avgpool(x)
-        x = self.flatten(x)
-        return x

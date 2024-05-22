@@ -26,24 +26,36 @@ parser.add_argument("-fold", "--fold", default=0)
 args = parser.parse_args()
 fold = args.fold
 #fold = 0
+dataset_name = 'RADFUSION'
+
+encoder = 'base'
+#ViT_dims = (512, 12, 8, 16) # (mlp_dim, depth, num_heads, patch_size)
+ViT_dims = (768, 6, 3, 16)
+feature_size = 48
+
+use_wandb = False
 
 phase = 'train'
 # model setting
-week = 19
-num_conv = 1
-model_ckpt = f'baseline_small_fold_{fold}'
+week = 30
+num_conv = 2
+model_ckpt = f'baseline_{encoder}_small_fold_{fold}'
+#lr = 0.00001
 lr = 0.0001
 
 # set seed
 seed = 10
+if dataset_name == 'RADFUSION':
+    # since we use the inital data split, we variate the seed to get different splits for cross validation
+    seed = int(fold)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 np.random.seed(seed)
 torch.backends.cudnn.deterministic=True
 
 # training setting
-epochs = 50
-batch_size = 64
+epochs = 50 if dataset_name != 'RADFUSION' else 75
+batch_size = 8
 num_fold = 5
 shuffle = True
 #aug = True
@@ -59,21 +71,31 @@ if LOCAL:
 froze_encoder = False
 
 model_name = 'CLS'  
-latent_size = 1024
+
+if encoder == 'base':
+    latent_size = 1024
+elif encoder == 'SWIN':
+    latent_size = 384 * (feature_size // 24)
+else:
+    latent_size = 768
+
 use_feature = ['z']
 
 pos_weight = [1]
 
 # dataset
 data_type = 'single'
-dataset_name = 'ADNI'
 data_path = '/scratch/users/shizhehe/ADNI/'
+if dataset_name == 'RADFUSION':
+    data_path = '/scratch/groups/kpohl/temp_radfusion/multimodalpulmonaryembolismdataset/RADFUSION/'
 if aug:
-    img_file_name = 'ADNI_longitudinal_img_aug.h5'
+    img_file_name = f'{dataset_name}_longitudinal_img_aug.h5'
 else:
-    img_file_name = 'ADNI_longitudinal_img.h5'
-noimg_file_name = 'ADNI_longitudinal_noimg.h5'
+    img_file_name = f'{dataset_name}_longitudinal_img.h5'
+noimg_file_name = f'{dataset_name}_longitudinal_noimg.h5'
 subj_list_postfix = 'NC_AD'
+if dataset_name == 'RADFUSION':
+    subj_list_postfix = 'NC_PE'
 if LOCAL:
     data_path = 'ADNI/'
 
@@ -82,16 +104,16 @@ localtime = time.localtime(time.time())
 time_label = str(localtime.tm_year) + '_' + str(localtime.tm_mon) + '_' + str(localtime.tm_mday) + '_' + str(localtime.tm_hour) + '_' + str(localtime.tm_min)
 
 # checkpoints
-ckpt_folder = '/scratch/users/shizhehe/ADNI/ckpt/'
+ckpt_folder = f'/scratch/users/shizhehe/{dataset_name}/ckpt/'
 if LOCAL:
-    ckpt_folder = 'ADNI/ckpt/'
+    ckpt_folder = f'{dataset_name}/ckpt/'
 
 ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f'week{week}', "classification", model_ckpt)
 if not os.path.exists(ckpt_path):
     os.makedirs(ckpt_path)
 
 if LOCAL:
-    ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, 'baseline_rig_eval_retrained')
+    ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, 'baseline_rig_eval')
 
 print("Loading Data")
 
@@ -107,13 +129,33 @@ trainDataLoader = Data.trainLoader
 valDataLoader = Data.valLoader
 testDataLoader = Data.testLoader
 
+from collections import defaultdict
+# Initialize a dictionary to store class counts
+class_counts = defaultdict(int)
+
+print(f'{len(trainDataLoader)}')
+# Iterate over the dataset and count occurrences of each class
+"""for loader in [trainDataLoader, valDataLoader, testDataLoader]:
+    for sample in tqdm.tqdm(loader):
+        labels = sample['label']
+        for label in labels:
+            label = label.item()
+            class_counts[label] += 1"""
+
+print(dict(class_counts))
+
 print("Data loaded!!!")
+
+kernel_size = 3
+if dataset_name == 'RADFUSION':
+    kernel_size = 3
+    latent_size = 8192
 
 # define model
 if LOCAL:
-    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=None, num_conv=num_conv).to(device)
+    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=None, num_conv=num_conv, encoder=encoder, ViT_dims=ViT_dims, feature_size=feature_size, kernel_size=kernel_size).to(device)
 else:
-    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=device, num_conv=num_conv).to(device)
+    model = CLS(latent_size, use_feature=use_feature, dropout=(froze_encoder == False), gpu=device, num_conv=num_conv, encoder=encoder, ViT_dims=ViT_dims, feature_size=feature_size, kernel_size=kernel_size).to(device)
 
 print("Model set!!!")
 
@@ -135,7 +177,7 @@ start_epoch = -1
 total_params = sum(p.numel() for p in model.parameters()) # if p.requires_grad)
 print(f"Total number of parameters in model: {total_params}")
 
-if phase == 'train':
+if phase == 'train' and use_wandb:
     print("Initialize Weights and Biases")
     wandb.init(
         # set the wandb project for run
@@ -145,6 +187,7 @@ if phase == 'train':
         config={
             "model_name": ckpt_path,
             "mode": phase,
+            "encoder": encoder,
             "train_mode": "baseline for classification!",
             "week": week,
             "fold": fold,
@@ -238,7 +281,7 @@ def train():
                 # pdb.set_trace()
                 print('Epoch[%3d], iter[%3d]: loss=[%.4f], cls=[%.4f]' \
                         % (epoch, iter, loss.item(), loss_cls.item()))
-
+        
         # save train result
         num_iter = global_iter - global_iter0
         for key in loss_all_dict.keys():
@@ -261,15 +304,16 @@ def train():
         print(stat)
         val_cls_loss_list.append(stat['cls'])
         val_total_loss_list.append(stat['all'])
-
-        wandb.log({
-            "train_cls_loss": loss_all_dict['cls'][0],
-            "validation_cls_loss": stat['cls'][0],
-            "train_bacc": train_stat['bacc'],
-            "validation_bacc": stat['bacc'][0],
-            "train_f1": train_stat["f1"],
-            "validation_f1": stat["f1"][0],
-        })
+        
+        if use_wandb:
+            wandb.log({
+                "train_cls_loss": loss_all_dict['cls'][0],
+                "validation_cls_loss": stat['cls'][0],
+                "train_bacc": train_stat['bacc'],
+                "validation_bacc": stat['bacc'][0],
+                "train_f1": train_stat["f1"],
+                "validation_f1": stat["f1"][0],
+            })
 
         # save ckp
         is_best = False

@@ -20,18 +20,23 @@ from collections import defaultdict
 import random
 import wandb
 
-LOCAL = True
+LOCAL = False
 DEBUG = False
 VNN = True
 
+ViT_dims = (768, 6, 3, 16) # (mlp_dim, depth, num_heads, patch_size)
 phase = 'train'
-encoder = 'base'
-week = 19
+#phase = 'train'
+encoder = 'ViT'
+#encoder = 'SWIN'
+
+feature_size = 48
+week = 28
 normalize_rotation = False
 normalize_matrix = False
-num_conv = 6
+num_conv = 1
 weight_decay = 1e-4
-alpha = 1.5
+alpha = 0.1
 
 seed = 10
 torch.manual_seed(seed)
@@ -45,44 +50,57 @@ device = torch.device('cuda:' + str(cuda)) if torch.cuda.is_available() else tor
 froze_encoder = False
 
 model_name = 'VN_Net'
-latent_size = 512
+if encoder == 'base':
+    latent_size = 1024
+elif encoder == 'SWIN':
+    latent_size = 384 * (feature_size // 24)
+else:
+    latent_size = 768
+
 #use_feature = ['z', 'delta_z']
 use_feature = ['z']
 
 pos_weight = [1]
 
 epochs = 50
-batch_size = 16
-num_fold = 0
+batch_size = 4
+num_fold = 5
 
 fold = 0 # modified for cross_validation
 
 shuffle = True
-lr = 0.0001
-#lr = 0.01
-#lr = 0.1
+#lr = 0.0001
+#lr = 0.001
+lr = 0.001
 aug = False
 #aug = True
 
 data_type = 'single'
 dataset_name = 'ADNI'
-data_path = '/scratch/users/shizhehe/ADNI/'
-img_file_name = 'ADNI_longitudinal_img.h5'
-#img_file_name = 'ADNI_longitudinal_img_aug.h5'
-noimg_file_name = 'ADNI_longitudinal_noimg.h5'
-#subj_list_postfix = 'NC_AD'
-subj_list_postfix = 'NC_AD_pMCI_sMCI'
+#dataset_name = 'NCANDA'
+data_path = f'/scratch/users/shizhehe/{dataset_name}/'
+
+if dataset_name == 'ADNI':
+    img_file_name = 'ADNI_longitudinal_img.h5'
+    #img_file_name = 'ADNI_longitudinal_img_aug.h5'
+    noimg_file_name = 'ADNI_longitudinal_noimg.h5'
+    #subj_list_postfix = 'NC_AD'
+    subj_list_postfix = 'NC_AD_pMCI_sMCI'
+else:
+    img_file_name = 'NCANDA_longitudinal_img.h5'
+    noimg_file_name = 'NCANDA_longitudinal_noimg.h5'
+    subj_list_postfix = 'all'
 if LOCAL:
     data_path = 'ADNI/'
 
 localtime = time.localtime(time.time())
 time_label = str(localtime.tm_year) + '_' + str(localtime.tm_mon) + '_' + str(localtime.tm_mday) + '_' + str(localtime.tm_hour) + '_' + str(localtime.tm_min)
 
-ckpt_folder = '/scratch/users/shizhehe/ADNI/ckpt/'
+ckpt_folder = f'/scratch/users/shizhehe/{dataset_name}/ckpt/'
 if LOCAL:
     ckpt_folder = 'ADNI/ckpt/'
-#name = time_label + f"_fixed_rotation_fold_{fold}"
-name = f"VN_Net_fold_{fold}_fixed_stronger_lowlr_special_giga_{'normalized' if normalize_matrix else 'unnormalized'}"
+
+name = f"VN_Net_fold_{fold}_fixed_{encoder}_tiny_{'normalized' if normalize_matrix else 'unnormalized'}"
 #name = f"VN_Net_best_results_prev"
 if VNN:
     ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "pretext", name)
@@ -118,12 +136,15 @@ print(dict(class_counts))
 print("Data loaded!!!")
 
 if LOCAL:
-    model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder=encoder, dropout=(froze_encoder == False), gpu=None, normalize_output=normalize_matrix).to(device)
+    model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder=encoder, dropout=(froze_encoder == False), gpu=None, normalize_output=normalize_matrix, ViT_dims=ViT_dims, feature_size=feature_size).to(device)
 else:
-    model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder=encoder, dropout=(froze_encoder == False), gpu=device, normalize_output=normalize_matrix).to(device)
+    model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder=encoder, dropout=(froze_encoder == False), gpu=device, normalize_output=normalize_matrix, ViT_dims=ViT_dims, feature_size=feature_size).to(device)
 
 print("Model set!!!")
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+encoder_params = sum(p.numel() for p in model.encoder.parameters() if p.requires_grad)
+print(f"Total number of parameters in model: {total_params}, encoder: {encoder_params}")
 
 if froze_encoder:
     for param in model.encoder.parameters():
@@ -131,6 +152,8 @@ if froze_encoder:
 
 optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay, amsgrad=True)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-5)
+
+start_epoch = -1
 
 if phase != 'train':
     [model], start_epoch = load_checkpoint_by_key([model], ckpt_path, ['model'], device)
@@ -143,11 +166,13 @@ rotations = [90, 180, 270]
 #rotations = [(0, 360)] # train once with only one rotation
 axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
-if phase == 'train':
+if phase == 'train' or phase == 'train-continue':
     print("Initialize Weights and Biases")
-    """wandb.init(
+    wandb.init(
         # set the wandb project for run
         project="vector-neurons-mri",
+
+        resume=True if phase == 'train-continue' else False,
         
         # track hyperparameters and run metadata
         config={
@@ -167,17 +192,23 @@ if phase == 'train':
             "alpha": alpha,
             "normalize_rotation_output": normalize_rotation,
             "normalize_matrix": normalize_matrix,
-            "notes": "longer training, massive model, correct loss normalization, no maximization component to loss!!"
+            "encoder": encoder,
+            "ViT_mlp_dim": ViT_dims[0],
+            "ViT_depth": ViT_dims[1],
+            "ViT_num_heads": ViT_dims[2],
+            "ViT_patch_size": ViT_dims[3],
+            "notes": "finalizing models, inverse maximization component to loss!!"
         }
-    )"""
+    )
+
+if phase == 'train-continue':
+    print(f'Continuing training from epoch {start_epoch}')
 
 # ------- train -------
 def train():
-    #wandb.watch(model, log='all') # add gradient visualization
+    wandb.watch(model, log='all') # add gradient visualization
 
     print(f"Total number of parameters in model: {total_params}")
-
-    start_epoch = -1
 
     print("Starting Training...")
 
@@ -204,7 +235,6 @@ def train():
 
         # go through all data batches in dataset
         for iter, sample in enumerate(trainDataLoader, 0):
-            print(sample)
             for _ in range(1):
             #for rotation in rotations:
                 #if type(rotation) != int:
@@ -270,8 +300,8 @@ def train():
                 optimizer.zero_grad()
 
                 if global_iter % 1 == 0:
-                    print('Epoch[%3d], iter[%3d]: loss=[%.4f], dis=[%.4f]' \
-                            % (epoch, iter, loss.item(), distance_loss.item()))
+                    print('Epoch[%3d], iter[%3d]: loss=[%.4f], dis=[%.4f], min_comp=[%.4f], max_comp=[%.4f]' \
+                            % (epoch, iter, loss.item(), distance_loss.item(), min_component.item(), max_component.item()))
                     
             #for key in loss_all_dict.keys(): # remember to normalize by rotation/matrix variations
             #    loss_all_dict[key] /= variations
@@ -506,7 +536,7 @@ def matmul_batch(img1, batch_size, rot_mat, mode='batch'):
         raise ValueError('Invalid mode: {}'.format(mode))
     return img2
 
-if phase == 'train':
+if phase == 'train' or phase == 'train-continue':
     train()
 else:
     stat = evaluate(phase='test', set='test', save_res=True)

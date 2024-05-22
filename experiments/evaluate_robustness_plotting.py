@@ -21,7 +21,7 @@ LOCAL = False
 DEBUG = False
 
 phase = 'val'
-week = 22
+week = 21
 num_conv = 1
 normalize_matrix = False
 normalize_rotation = False
@@ -66,10 +66,12 @@ aug = False
 
 
 #model_ckpt = f"VN_Net_fold_{fold}_best_results_prev_{'normalized' if normalize_matrix else 'unnormalized'}"
-model_ckpt = f'baseline_robustness_one_rotation_milder_small_fold_{fold}'
+model_ckpt = f'baseline_robustness_small_fold_{fold}'
 #model_ckpt = f'VN_Net_fold_{fold}_fixed_with_max_lowlr_special_small_milder_robustness_unnormalized_robustness'
 #model_ckpt = f'VN_Net_fold_{fold}_fixed_with_max_lowlr_special_small_explicit_robustness_highalpha_unnormalized'
+#model_ckpt = f'VN_Net_fold_{fold}_fixed_with_max_lowlr_special_small_explicit_discrete_lowalpha_robustness_unnormalized'
 #model_ckpt = f'VN_Net_fold_{fold}_fixed_with_max_lowlr_special_small_robustness_unnormalized_robustness'
+
 
 #model_name = 'VN_Net'
 model_name = 'CLS'
@@ -102,9 +104,13 @@ if LOCAL:
     ckpt_folder = 'ADNI/ckpt/'
 
 ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "classification", f"{model_ckpt}{'_frozen' if froze_encoder else ''}")
+plotting_path = os.path.join(ckpt_folder, dataset_name, model_name, 'plotting_data')
 
 if not os.path.exists(ckpt_path):
     os.makedirs(ckpt_path)
+
+if not os.path.exists(plotting_path):
+    os.makedirs(plotting_path)
 
 print("Loading Data")
 
@@ -228,11 +234,15 @@ def evaluate_rotation(phase='val', set='val', save_res=True, info='', model=mode
     #rotations = [(15, 30), (30, 45)]
     #rotations = [(10, 30), (35, 55), (170, 190)]
     #rotations = [(0, 30), (30, 60), (60, 90), (90, 120), (120, 150), (150, 180)]
-    rotations = [(90, 90), (180, 180), (270, 270)]
+    #rotations = [(0, 0), (90, 90), (180, 180), (270, 270)]
+    rotations = [(rot, rot) for rot in range(0, 361, 15)] 
     axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
     # abstract dict based on rotations
     pred_list_rot = {f"{key[0]}-{key[1]}": [] for key in rotations}
     label_list_rot = {f"{key[0]}-{key[1]}": [] for key in rotations}
+
+    bacc_list_rot = {}
+    f1_list_rot = {}
 
     with torch.no_grad():
         for iter, sample in tqdm.tqdm(enumerate(loader, 0)):
@@ -277,6 +287,20 @@ def evaluate_rotation(phase='val', set='val', save_res=True, info='', model=mode
             pred_list_rot[key] = np.concatenate(pred_list_rot[key], axis=0)
             label_list_rot[key] = np.concatenate(label_list_rot[key], axis=0)
             bacc = compute_classification_metrics(label_list_rot[key], pred_list_rot[key], dataset_name, subj_list_postfix)
+            bacc_list_rot[key] = bacc['bacc']
+            f1_list_rot[key] = bacc['f1']
+
+        # save dict as csv
+        import csv
+        print(bacc_list_rot)
+        print(f1_list_rot)
+        with open(os.path.join(plotting_path, 'bacc_list_rot.csv'), 'a') as f:
+            for key in bacc_list_rot.keys():
+                f.write("%s,%s,%s\n"%(key,f1_list_rot[key], fold))
+
+        with open(os.path.join(plotting_path, 'f1_list_rot.csv'), 'a') as f:
+            for key in f1_list_rot.keys():
+                f.write("%s,%s,%s\n"%(key,f1_list_rot[key], fold))
 
         print("--- Overall performance ---")
         label_list = np.concatenate(label_list, axis=0)

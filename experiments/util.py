@@ -40,8 +40,11 @@ class CrossSectionalDataset(Dataset):
 
     def __getitem__(self, idx):
         # idx = idx // 3
-        subj_id = self.subj_id_list[idx]
+        subj_id = str(self.subj_id_list[idx])
         case_id = self.case_id_list[0][idx]
+        if self.dataset_name == 'RADFUSION':
+            case_id = os.path.basename(case_id)
+
         case_order = self.case_id_list[1][idx]
 
         if self.aug:
@@ -59,15 +62,26 @@ class CrossSectionalDataset(Dataset):
             label = np.array(self.data_noimg[subj_id]['label_all'][case_order])
         else:
             label = np.array(self.data_noimg[subj_id]['label'])
-        mean_age = np.array(self.data_noimg[subj_id]['mean_age'])
-        std_age = np.array(self.data_noimg[subj_id]['std_age'])
-        age = np.array(self.data_noimg[subj_id]['age'] + self.data_noimg[subj_id]['date_interval'][case_order])
+        if self.dataset_name == 'ADNI':
+            mean_age = np.array(self.data_noimg[subj_id]['mean_age'])
+            std_age = np.array(self.data_noimg[subj_id]['std_age'])
+
+        age = None
+        if self.dataset_name != 'RADFUSION':
+            age = np.array(self.data_noimg[subj_id]['age'] + self.data_noimg[subj_id]['date_interval'][case_order])
+
+        #print('img', img)
         if self.dataset_name == 'LAB':
             age = (age - 47.3) / 17.6
         if self.dataset_name == 'NCANDA':
             age = (age - 19.5) / 3.4
         # TODO: move age normalization to data loading pipeline from data preprocessing
-        return {'img': img, 'label': label, 'age': age, 'mean_age': mean_age, 'std_age': std_age}
+        if self.dataset_name == 'ADNI':
+            return {'img': img, 'label': label, 'age': age, 'mean_age': mean_age, 'std_age': std_age}
+        elif self.dataset_name == 'RADFUSION':
+            return {'img': img, 'label': label}
+        else:
+            return {'img': img, 'label': label, 'age': age}
 
 class LongitudinalPairDataset(Dataset):
     def __init__(self, dataset_name, data_img, data_noimg, subj_id_list, case_id_list, aug=False, is_label_tp=False):
@@ -169,7 +183,7 @@ class LongitudinalData(object):
     def __init__(self, dataset_name, data_path, img_file_name='ADNI_longitudinal_img.h5',
                 noimg_file_name='ADNI_longitudinal_noimg.h5', subj_list_postfix='NC_AD', data_type='single',
                 aug=False, batch_size=16, num_fold=5, fold=0, shuffle=True, num_workers=0, pretext=False):
-        if dataset_name == 'ADNI' or dataset_name == 'LAB' or dataset_name == 'NCANDA':
+        if dataset_name == 'ADNI' or dataset_name == 'LAB' or dataset_name == 'NCANDA' or dataset_name == 'RADFUSION':
             data_img = h5py.File(os.path.join(data_path, img_file_name), 'r')
             data_noimg = h5py.File(os.path.join(data_path, noimg_file_name), 'r')
 
@@ -335,6 +349,10 @@ def compute_classification_metrics(label, pred, dataset_name='ADNI', postfix='NC
         elif dataset_name == 'NCANDA':
             label = (label > 0)
             classes = [0,1]
+        elif dataset_name == 'RADFUSION':
+            classes = [0,1]
+        else:
+            raise ValueError('Not support this dataset!')
 
         #classes = [0,1] # currently, we only consider binary classification of NC and others
 
@@ -348,11 +366,19 @@ def compute_classification_metrics(label, pred, dataset_name='ADNI', postfix='NC
         tn = np.sum(np.logical_and(label==classes[0], pred_bi==0))
         fn = np.sum(np.logical_and(label==classes[1], pred_bi==0))
         auc = sklearn.metrics.roc_auc_score(label==classes[1], pred.squeeze(1))
+
+        #sklearn_f1 = sklearn.metrics.f1_score(y_true=label, y_pred=pred_bi)
+        if dataset_name != 'RADFUSION':
+            label /= 2
+        alt_sklearn_f1 = sklearn.metrics.f1_score(y_true=label, y_pred=pred_bi)
+        
         sen = tp/(tp+fn)
         spe = tn/(tn+fp)
         bacc = 0.5 * (sen + spe)
         acc = (tp+tn)/(tp+fp+fn+tn)
         f1 = (tp)/(tp + 0.5*(fp+fn))
+        #print(f'sklearn_f1: {sklearn_f1}, f1: {f1}, alt_sklearn_f1: {alt_sklearn_f1}')
+        print(f'f1: {f1}, alt_sklearn_f1: {alt_sklearn_f1}')
         #acc = ((pred > 0.0) == label).float().mean()
         print(f"acc: {acc}, auc: {auc}, bacc: {bacc}, sen: {sen}, spe: {spe}, f1: {f1}")
         return {'bacc': bacc, 'f1': f1}

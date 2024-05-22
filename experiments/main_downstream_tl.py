@@ -20,17 +20,21 @@ LOCAL = False
 DEBUG = False
 VNN = True
 
+encoder = 'ViT'
+#ViT_dims = (768, 3, 8, 16) # (mlp_dim, depth, num_heads, patch_size)
+ViT_dims = (768, 6, 3, 16)
+feature_size = 24
+
 # set before every training!
-week = 19
+week = 28
 num_conv = 1
 normalize_rotation = False
 normalize_matrix = False
-# week 16 onward: don't freeze encoder
+# week 16: don't freeze encoder
 froze_encoder = False
 #lr = 0.01
-#lr = 0.0001
-lr = 0.001
 #lr = 0.00001
+lr = 0.0001
 
 phase = 'train'
 
@@ -60,23 +64,28 @@ print(f"{phase}-ing model on downstream task for fold {fold}")
 
 pretext_fold = 0
 model_name = 'VN_Net'
-#model_ckpt = f'VN_Net_fold_{fold}_fixed_large_normalized'
-#model_ckpt_pretext = f'VN_Net_fold_{pretext_fold}_fixed_large_normalized'
-#model_ckpt = f"VN_Net_fold_{fold}_fixed_moderate_giga_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
-#model_ckpt_pretext = f"VN_Net_fold_{pretext_fold}_fixed_moderate_giga_{'normalized' if normalize_matrix else 'unnormalized'}"
-model_ckpt = f"{base_name.format(fold=fold)}_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
+model_ckpt = f"{base_name.format(fold=fold)}_modlr_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
 model_ckpt_pretext = f"{base_name.format(fold=pretext_fold)}_{'normalized' if normalize_matrix else 'unnormalized'}"
 
 normalize_matrix = False
 
-latent_size = 1024
-#latent_size = 512
+if encoder == 'base':
+    latent_size = 1024
+elif encoder == 'SWIN':
+    latent_size = 384 * (feature_size // 24)
+else:
+    latent_size = 768
+
 use_feature = ['z']
 
 pos_weight = [1]
 
 epochs = 50
 batch_size = 64
+if encoder == 'SWIN':
+    batch_size = 4
+elif encoder == 'ViT':
+    batch_size = 32
 num_fold = 5
 
 shuffle = True
@@ -138,10 +147,10 @@ print("Data loaded!!!")
 
 if LOCAL:
     if model_name == 'VN_Net':
-        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder='base', dropout=(froze_encoder == False), gpu=None, normalize_output=normalize_matrix).to(device)
+        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder=encoder, dropout=(froze_encoder == False), gpu=None, normalize_output=normalize_matrix, ViT_dims=ViT_dims, feature_size=feature_size).to(device)
 else:
     if model_name == 'VN_Net':
-        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder='base', dropout=False, gpu=device, normalize_output=normalize_matrix).to(device)
+        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder=encoder, dropout=False, gpu=device, normalize_output=normalize_matrix, ViT_dims=ViT_dims, feature_size=feature_size).to(device)
 print("Model set!!!")
 
 if froze_encoder:
@@ -184,7 +193,12 @@ if phase == 'train':
             "epochs": epochs,
             "batch_size": batch_size,
             "froze_encoder": froze_encoder,
-            "notes": f"downstream task, of week {week}, of {saved_path}"
+            "notes": f"downstream task, of week {week}, of {saved_path}",
+            "ViT_mlp_dim": ViT_dims[0] if encoder == 'ViT' else 'not ViT!',
+            "ViT_num_layers": ViT_dims[1] if encoder == 'ViT' else 'not ViT!',
+            "ViT_num_heads": ViT_dims[2] if encoder == 'ViT' else 'not ViT!',
+            "ViT_patch_size": ViT_dims[3] if encoder == 'ViT' else 'not ViT!',
+            "encoder": encoder,
         }
     )
     wandb.watch(model, log='all') # add gradient visualization

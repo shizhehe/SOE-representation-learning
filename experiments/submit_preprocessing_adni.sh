@@ -2,6 +2,7 @@
 #
 #SBATCH --job-name=data_preprocessing
 #
+#SBATCH --partition=kpohl
 #SBATCH --time=200:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4

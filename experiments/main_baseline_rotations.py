@@ -11,9 +11,11 @@ import tqdm
 from model_vn import *
 from util import *
 import matplotlib.pyplot as plt
+from so3_transformations.transformations import *
 import argparse
 import wandb
 import h5py
+import random
 
 LOCAL = False
 DEBUG = False
@@ -29,9 +31,9 @@ fold = args.fold
 
 phase = 'train'
 # model setting
-week = 18
-num_conv = 6
-model_ckpt = f'baseline_huge_fold_{fold}'
+week = 22
+num_conv = 1
+model_ckpt = f'baseline_robustness_one_rotation_milder_small_fold_{fold}'
 lr = 0.0001
 
 # set seed
@@ -42,8 +44,8 @@ np.random.seed(seed)
 torch.backends.cudnn.deterministic=True
 
 # training setting
-epochs = 50
-batch_size = 16
+epochs = 100
+batch_size = 64
 num_fold = 5
 shuffle = True
 #aug = True
@@ -57,6 +59,7 @@ if LOCAL:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 froze_encoder = False
+normalize_rotation = False
 
 model_name = 'CLS'  
 latent_size = 1024
@@ -135,6 +138,12 @@ start_epoch = -1
 total_params = sum(p.numel() for p in model.parameters()) # if p.requires_grad)
 print(f"Total number of parameters in model: {total_params}")
 
+# possible rotations
+#rotations = [0, 90, 180, 270]
+#rotations = [(0, 90), (90, 180), (180, 360)] # instead of fixed rotations, we will use random rotations
+rotations = [(15, 45)] # train once with only one rotation
+axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+
 if phase == 'train':
     print("Initialize Weights and Biases")
     wandb.init(
@@ -154,6 +163,7 @@ if phase == 'train':
             "data_subset": subj_list_postfix,
             "epochs": epochs,
             "batch_size": batch_size,
+            "rotations": rotations,
             "froze_encoder": froze_encoder,
             "notes": f"downstream task, of week {week}, of {ckpt_path}"
         }
@@ -189,55 +199,70 @@ def train():
 
         # go through all data batches in dataset
         for iter, sample in enumerate(trainDataLoader, 0):
-            global_iter += 1
-            img1 = sample['img'].to(device, dtype=torch.float).unsqueeze(1)
+            for _ in range(1):
+            #for rotation in rotations:
+                #if type(rotation) != int:
+                #    rotation = random.randint(rotation[0], rotation[1])
+                img1 = sample['img'].to(device, dtype=torch.float)
+                if _ == 0:
+                    #rotation = random.choice(rotations) 
+                    rotation = rotations[0]
+                    if type(rotation) != int:
+                        rotation = random.randint(rotation[0], rotation[1])
+                    global_iter += 1
+                    axis = axes[np.random.randint(0, len(axes) - 1)]
+                    rot_mat = generate_rotation_matrix(axis, rotation, device)#.to(device, dtype=torch.float) # R
+                    
+                    img2 = rotate_batch(img1, batch_size, rot_mat)
+                    img2 = img2.to(device, dtype=torch.float).unsqueeze(1)
+                else:
+                    img2 = img1.to(device, dtype=torch.float).unsqueeze(1)
+                if subj_list_postfix == 'C_single':
+                    label = sample['age'].to(device, dtype=torch.float)
+                else:
+                    label = sample['label'].to(device, dtype=torch.float)
 
-            if subj_list_postfix == 'C_single':
-                label = sample['age'].to(device, dtype=torch.float)
-            else:
-                label = sample['label'].to(device, dtype=torch.float)
+                # if remainder of data isn't enough for batch
+                if DEBUG:
+                    print(f"Input batch shape: {img1.shape}")
+                    print(f'Size: {img1.shape[0]}, batch_size: {batch_size}')
+                if img1.shape[0] <= batch_size // 2:
+                    print("Size of data too small!")
+                    break
 
-            # if remainder of data isn't enough for batch
-            if DEBUG:
-                print(f"Input batch shape: {img1.shape}")
-                print(f'Size: {img1.shape[0]}, batch_size: {batch_size}')
-            if img1.shape[0] <= batch_size // 2:
-                print("Size of data too small!")
-                break
+                # run model on rotated image
+                pred, _ = model.forward_single(img2)
 
-            # run model
-            pred, _ = model.forward_single(img1)
+                loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
 
-            loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
+                loss = loss_cls
+                loss_all_dict['cls'] += loss_cls.item()
+                loss_all_dict['all'] += loss.item()
 
-            loss = loss_cls
-            loss_all_dict['cls'] += loss_cls.item()
-            loss_all_dict['all'] += loss.item()
+                if DEBUG:
+                    print(f'Sample classification loss: {loss_cls}')
+                    print(f'Sample total loss: {loss_cls}')
 
-            if DEBUG:
-                print(f'Sample classification loss: {loss_cls}')
-                print(f'Sample total loss: {loss_cls}')
+                pred_list.append(pred_sig.detach().cpu().numpy())
+                label_list.append(label.detach().cpu().numpy())
 
-            pred_list.append(pred_sig.detach().cpu().numpy())
-            label_list.append(label.detach().cpu().numpy())
+                loss.backward()
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-            loss.backward()
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                for name, param in model.named_parameters():
+                    try:
+                        if not torch.isfinite(param.grad).all():
+                            pdb.set_trace()
+                    except:
+                        continue
 
-            for name, param in model.named_parameters():
-                try:
-                    if not torch.isfinite(param.grad).all():
-                        pdb.set_trace()
-                except:
-                    continue
+                optimizer.step()
+                optimizer.zero_grad()
 
-            optimizer.step()
-            optimizer.zero_grad()
-
-            if global_iter % 1 == 0:
-                # pdb.set_trace()
-                print('Epoch[%3d], iter[%3d]: loss=[%.4f], cls=[%.4f]' \
-                        % (epoch, iter, loss.item(), loss_cls.item()))
+                if global_iter % 1 == 0:
+                    # pdb.set_trace()
+                    print('Epoch[%3d], iter[%3d]: loss=[%.4f], cls=[%.4f], rotation=[%.4f]' \
+                            % (epoch, iter, loss.item(), loss_cls.item(), rotation))
 
         # save train result
         num_iter = global_iter - global_iter0
@@ -395,6 +420,33 @@ def evaluate(phase='val', set='val', save_res=True, info='', wandb_log=False):
         )
 
     return loss_all_dict
+
+def rotate_batch(img1, batch_size, rot_mat):
+    #print(img1[0, :, :, :])
+    #print("Mean:", torch.mean(img1[0, :, :, :]))
+    #print("Min:", torch.min(img1[0, :, :, :]))
+    #print("Max:", torch.max(img1[0, :, :, :]))
+    #medutils.visualization.show(img1[0, :, :, :].cpu().numpy())
+    #plt.show()
+
+    img1 = img1.requires_grad_(True)
+    rotated_volumes = []
+    for i in range(min(img1.shape[0], batch_size)):
+        volume = img1[i]
+        # add normalization of rotated volume to linear transform into same range
+        if normalize_rotation: 
+            rotated_volumes.append(normalize_volume(volume, rotate_volume(volume, rot_mat, device, mode='trilinear')))
+        else:
+            rotated_volumes.append(rotate_volume(volume, rot_mat, device, mode='trilinear'))
+        
+    img2 = torch.stack(rotated_volumes).to(device, dtype=torch.float)
+
+    #print(img2[0, :, :, :])
+    #print("Mean:", torch.mean(img2[0, :, :, :]))
+    #print("Min:", torch.min(img2[0, :, :, :]))
+    #print("Max:", torch.max(img2[0, :, :, :]))
+    #sys.exit()
+    return img2
 
 if phase == 'train':
     train()

@@ -234,7 +234,7 @@ def augment_image(img, rotate, shift, flip):
         img = np.flip(img, 0) - np.zeros_like(img)
     return img
 
-h5_img_path = '/scratch/users/shizhehe/ADNI/ADNI_longitudinal_img_aug.h5'
+"""h5_img_path = '/scratch/users/shizhehe/ADNI/ADNI_longitudinal_img_aug.h5'
 aug_size = 10
 if not os.path.exists(h5_img_path):
     f_img = h5py.File(h5_img_path, 'a')
@@ -254,7 +254,7 @@ if not os.path.exists(h5_img_path):
             imgs = np.stack(imgs, 0)
             subj_img.create_dataset(os.path.basename(img_path), data=imgs)
         print(i, subj_id)
-    f_img.close()
+    f_img.close()"""
 
 sys.exit()
 
@@ -302,8 +302,8 @@ def get_subj_single_case_id_list(subj_data, subj_id_list):
     return subj_id_list_full, case_id_list_full
  
 #pdb.set_trace()
-#subj_list_postfix = 'NC_AD_pMCI_sMCI'
-subj_list_postfix = 'NC_AD_pMCI_sMCI_single'
+subj_list_postfix = 'NC_AD_pMCI_sMCI'
+#subj_list_postfix = 'NC_AD_pMCI_sMCI_single'
 # subj_list_postfix = 'NC_AD_pMCI_sMCI_far'
 #subj_list_postfix = 'NC_AD_single'
 #subj_list_postfix = 'NC_single'

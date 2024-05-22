@@ -15,29 +15,26 @@ import h5py
 import matplotlib.pyplot as plt
 import argparse
 import wandb
+import random
 
 LOCAL = False
 DEBUG = False
 VNN = True
 
 # set before every training!
-feature_size = 48
-
-week = 28
+week = 24
 num_conv = 1
+alpha = 0.1
 normalize_rotation = False
 normalize_matrix = False
 # week 16: don't freeze encoder
 froze_encoder = False
-#lr = 0.00002
+#lr = 0.01
 #lr = 0.0001
 lr = 0.001
 #lr = 0.00001
 
-ViT_dims = (768, 3, 8, 16)
 phase = 'train'
-task = "age"
-encoder = 'ViT'
 
 seed = 10
 torch.manual_seed(seed)
@@ -55,42 +52,31 @@ parser = argparse.ArgumentParser()
 # Adding optional argument
 parser.add_argument("-fold", "--fold", default=0)
 parser.add_argument("-name", "--name", default="VN_Net_fold_{fold}_fixed_moderate_giga")
-
+ 
 # Read arguments from command line
 args = parser.parse_args()
-
+ 
 fold = args.fold
 base_name = args.name
 print(f"{phase}-ing model on downstream task for fold {fold}")
 
-model_name = 'VN_Net'
 pretext_fold = 0
-model_ckpt = f"{base_name.format(fold=fold)}_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
+model_name = 'VN_Net'
+model_ckpt = f"{base_name.format(fold=fold)}_explicit_discrete_lowalpha_robustness_{'normalized' if normalize_matrix else 'unnormalized'}{'_frozen' if froze_encoder else ''}"
 model_ckpt_pretext = f"{base_name.format(fold=pretext_fold)}_{'normalized' if normalize_matrix else 'unnormalized'}"
 
-if encoder == 'base':
-    latent_size = 1024
-elif encoder == 'SWIN':
-    latent_size = 384 * (feature_size // 24)
-else:
-    latent_size = 768
+normalize_matrix = False
 
+latent_size = 1024
 use_feature = ['z']
 
 pos_weight = [1]
 
 epochs = 50
 batch_size = 64
-if encoder == 'SWIN':
-    batch_size = 4
-elif encoder == 'ViT':
-    batch_size = 32
 num_fold = 5
 
 shuffle = True
-#lr = 0.01
-#lr = 0.001
-#lr = 0.0001
 #aug = True
 aug = False
 
@@ -102,7 +88,7 @@ if aug:
 else:
     img_file_name = 'ADNI_longitudinal_img.h5'
 noimg_file_name = 'ADNI_longitudinal_noimg.h5'
-subj_list_postfix = 'NC'
+subj_list_postfix = 'NC_AD'
 if LOCAL:
     data_path = 'ADNI/'
 
@@ -114,7 +100,7 @@ if LOCAL:
     ckpt_folder = 'ADNI/ckpt/'
 
 saved_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "pretext", model_ckpt_pretext)
-ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "age", f"{model_ckpt}")
+ckpt_path = os.path.join(ckpt_folder, dataset_name, model_name, f"week{week}", "classification", f"{model_ckpt}")
 if not os.path.exists(ckpt_path):
     os.makedirs(ckpt_path)
 
@@ -149,11 +135,10 @@ print("Data loaded!!!")
 
 if LOCAL:
     if model_name == 'VN_Net':
-        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, encoder=encoder, dropout=(froze_encoder == False), gpu=None, feature_size=feature_size, ViT_dims=ViT_dims).to(device)
+        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder='base', dropout=(froze_encoder == False), gpu=None, normalize_output=normalize_matrix).to(device)
 else:
     if model_name == 'VN_Net':
-        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, encoder=encoder, dropout=False, gpu=device, feature_size=feature_size, ViT_dims=ViT_dims).to(device)
-
+        model = VN_Net(latent_size, use_feature=use_feature, vn_module=True, num_conv=num_conv, encoder='base', dropout=False, gpu=device, normalize_output=normalize_matrix).to(device)
 print("Model set!!!")
 
 if froze_encoder:
@@ -161,38 +146,48 @@ if froze_encoder:
         param.requires_grad = False
     print("Froze encoder!!!")
 
-# define optimizer
+#optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4, amsgrad=True)
+#optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4) # SGD doesn't learn well
 optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4, amsgrad=True)
-#optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-6)
+# try different lr scheduler
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-5, verbose=True)
+#scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5, verbose=True)
 
 if phase == 'train':
     [model], start_epoch = load_checkpoint_by_key([model], saved_path, ['model'], device)
 else:
     [model], start_epoch = load_checkpoint_by_key([model], ckpt_path, ['model'], device)
 
-subj_list_postfix = 'C_single'
+total_params = sum(p.numel() for p in model.parameters()) # if p.requires_grad)
+print(f"Total number of parameters in model: {total_params}")
+
+# possible rotations
+rotations = [90, 180, 270]
+#rotations = [(0, 90), (90, 180), (180, 360)] # instead of fixed rotations, we will use random rotations
+#rotations = [(15, 45)] # train with mild rotations
+axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
 if phase == 'train':
     print("Initialize Weights and Biases")
     wandb.init(
         # set the wandb project for run
-        project="vector-neurons-mri-age",
+        project="vector-neurons-mri",
         
         # track hyperparameters and run metadata
         config={
             "model_name": ckpt_path,
             "mode": phase,
-            "train_mode": "downstream_age",
-            "pretext_model": "best sofar",
+            "train_mode": "downstream classification",
             "week": week,
             "fold": fold,
             "architecture": model_name,
+            "model_params": total_params,
             "learning_rate": lr,
             "data_subset": subj_list_postfix,
             "epochs": epochs,
             "batch_size": batch_size,
-            "notes": "downstream_age, new fixed rotation model with only NC and AD data samples"
+            "froze_encoder": froze_encoder,
+            "notes": f"downstream task, of week {week}, of {saved_path}"
         }
     )
     wandb.watch(model, log='all') # add gradient visualization
@@ -210,78 +205,90 @@ def train():
     train_dis_loss_list = []
     train_cls_loss_list = []
     train_total_loss_list = []
+    train_inv_loss_list = []
 
-    train_r2_list = []
-    val_r2_list = []
+    train_bacc_list = []
+    val_bacc_list = []
 
     val_dis_loss_list = []
     val_cls_loss_list = []
     val_total_loss_list = []
     
-    print(f'Number of Training Batches: {len(trainDataLoader)}')
-
     # iterate through epochs
     for epoch in range(start_epoch + 1, start_epoch + epochs):
         model.train()
-        loss_all_dict = {'all': 0, 'dis': 0., 'cls': 0.} # dis is distance loss, cls is classification loss, all is total loss
+        loss_all_dict = {'all': 0, 'dis': 0., 'cls': 0., 'invariance_loss': 0.} # dis is distance loss, cls is classification loss, all is total loss
         global_iter0 = global_iter
 
         pred_list = [] 
         label_list = []
 
+        print(f'Number of Training Batches: {len(trainDataLoader)}')
+
         # go through all data batches in dataset
         for iter, sample in enumerate(trainDataLoader, 0):
-            global_iter += 1
-            img1 = sample['img'].to(device, dtype=torch.float).unsqueeze(1)
+            for _ in range(1):
+                global_iter += 1
+                img1 = sample['img'].to(device, dtype=torch.float)#.unsqueeze(1)
+                
+                rotation = random.choice(rotations)
+                #rotation = rotations[0]
+                #if type(rotation) != int:
+                #    rotation = random.randint(rotation[0], rotation[1])
+                
+                global_iter += 1
+                axis = axes[np.random.randint(0, len(axes) - 1)]
+                rot_mat = generate_rotation_matrix(axis, rotation, device)#.to(device, dtype=torch.float) # R
+                
+                img2 = rotate_batch(img1, batch_size, rot_mat)
+                img1 = img1.unsqueeze(1)
+                img2 = img2.to(device, dtype=torch.float).unsqueeze(1)
+
+                if subj_list_postfix == 'C_single':
+                    label = sample['age'].to(device, dtype=torch.float)
+                else:
+                    label = sample['label'].to(device, dtype=torch.float)
+
+                if DEBUG:
+                    print(f"Input batch shape: {img1.shape}")
+                    print(f'Size: {img1.shape[0]}, batch_size: {batch_size}')
+                #if img1.shape[0] <= batch_size // 2:
+                #    print("Size of data too small!")
+                #    break
+
+                pred, z1 = model.forward_single(img1)
+                # run model to fetch predictions
+                _, z2 = model.forward_single(img2)
+                
+                # compute distance loss between R x z1 and z2
+                loss_cls, invariance_loss, pred_sig = model.compute_classification_invariance_loss(pred, label, z1, z2, torch.tensor(pos_weight), dataset_name, subj_list_postfix, alpha=alpha)
             
-            if subj_list_postfix == 'C_single':
-                label = sample['age'].to(device, dtype=torch.float)
-                mean_age = sample['mean_age'].to(device, dtype=torch.float)
-                std_age = sample['std_age'].to(device, dtype=torch.float)
-            else:
-                label = sample['label'].to(device, dtype=torch.float)
-                mean_age = None
-                std_age = None
+                loss = loss_cls
 
-            if DEBUG:
-                print(f"Input batch shape: {img1.shape}")
-                print(f'Size: {img1.shape[0]}, batch_size: {batch_size}')
+                loss_all_dict['cls'] += loss_cls.item()
+                loss_all_dict['invariance_loss'] += invariance_loss.item()
+                loss_all_dict['all'] += loss.item()
 
-            # run model to fetch predictions
-            pred, _ = model.forward_single(img1)
-            
-            # compute distance loss between R x z1 and z2
-            loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix, task)
-        
-            loss = loss_cls
+                pred_list.append(pred_sig.detach().cpu().numpy())
+                label_list.append(label.detach().cpu().numpy())
 
-            loss_all_dict['cls'] += loss_cls.item()
-            loss_all_dict['all'] += loss.item()
+                loss.backward()
+                #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-            if DEBUG:
-                print(f'Sample classification loss: {loss_cls}')
-                print(f'Sample total loss: {loss_cls}')
+                for name, param in model.named_parameters():
+                    try:
+                        if not torch.isfinite(param.grad).all():
+                            pdb.set_trace()
+                    except:
+                        continue
 
-            pred_list.append(pred_sig.detach().cpu().numpy())
-            label_list.append(label.detach().cpu().numpy())
+                optimizer.step()
+                optimizer.zero_grad()
 
-            loss.backward()
-            #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-            for name, param in model.named_parameters():
-                try:
-                    if not torch.isfinite(param.grad).all():
-                        pdb.set_trace()
-                except:
-                    continue
-
-            optimizer.step()
-            optimizer.zero_grad()
-
-            if global_iter % 1 == 0:
-                # pdb.set_trace()
-                print('Epoch[%3d], iter[%3d]: loss=[%.4f], cls=[%.4f], dis=[%.4f]' \
-                        % (epoch, iter, loss.item(), loss_cls.item(), 0))
+                if global_iter % 1 == 0:
+                    # pdb.set_trace()
+                    print('Epoch[%3d], iter[%3d]: loss=[%.4f], cls=[%.4f], inv=[%.4f], rotation=[%.4f]' \
+                            % (epoch, iter, loss.item(), loss_cls.item(), invariance_loss.item(), rotation))
 
         #scheduler.step()
 
@@ -293,33 +300,33 @@ def train():
         print(loss_all_dict)
         train_dis_loss_list.append(loss_all_dict['dis'])
         train_cls_loss_list.append(loss_all_dict['cls'])
+        train_inv_loss_list.append(loss_all_dict['invariance_loss'])
         train_total_loss_list.append(loss_all_dict['all'])
 
         pred_list = np.concatenate(pred_list, axis=0) # pred already sigmoid
         label_list = np.concatenate(label_list, axis=0)
-        train_stat = compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix, task, std_age, mean_age)
-        train_r2_list.append(train_stat["r2"])
+        train_stat = compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix)
+        train_bacc_list.append(train_stat['bacc'])
 
         # validation
         stat = evaluate(phase='val', set='val', save_res=False)
-        monitor_metric = stat['r2']
+        monitor_metric = stat['bacc']
+        #monitor_metric = stat['f1']
         scheduler.step(monitor_metric)
         save_result_stat(stat, {'ckpt_path': ckpt_path}, info='val')
         print(stat)
-        val_r2_list.append(stat['r2'])
+        val_bacc_list.append(stat['bacc'])
         val_cls_loss_list.append(stat['cls'])
         val_total_loss_list.append(stat['all'])
 
-        # save wandb
         wandb.log({
-            "train_age_loss": loss_all_dict['cls'][0],
-            "validation_age_loss": stat['cls'][0],
-            "train_r2": train_stat['r2'],
-            "validation_f2": stat['r2'][0],
-            "train_mae": train_stat["mae"],
-            "validation_mae": stat["mae"][0],
-            "train_mse": train_stat["mse"],
-            "validation_mse": stat["mse"][0]
+            "train_total_loss": loss_all_dict['cls'][0],
+            "validation_total_loss": stat['cls'][0],
+            "train_invariance_loss": loss_all_dict['invariance_loss'][0],
+            "train_bacc": train_stat['bacc'],
+            "validation_bacc": stat['bacc'][0],
+            "train_f1": train_stat["f1"],
+            "validation_f1": stat["f1"][0],
         })
 
         # save ckp
@@ -337,28 +344,6 @@ def train():
         #print(scheduler.get_last_lr())
         save_checkpoint(state, is_best, ckpt_path)
     
-    # plot losses
-    plt.plot(epoch_list, train_cls_loss_list, label='Training Cls. Loss')
-    plt.plot(epoch_list, val_cls_loss_list, label='Validation Cls. Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-    plt.title('Downstream Classification Training/Validation Losses')
-    print(os.path.join(ckpt_path, 'separate_losses_downstream.png'))
-    plt.savefig(os.path.join(ckpt_path, 'separate_losses_downstream.png'))
-    plt.clf()
-
-    plt.plot(epoch_list, train_total_loss_list, label='Training Total Loss')
-    plt.plot(epoch_list, val_total_loss_list, label='Validation Total Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-    plt.title('Downstream Total Losses')
-    plt.savefig(os.path.join(ckpt_path, 'total_losses_downstream.png'))
-
-
 def evaluate(phase='val', set='val', save_res=True, info='', wandb_log=False):
     model.eval()
     if phase == 'val':
@@ -405,16 +390,13 @@ def evaluate(phase='val', set='val', save_res=True, info='', wandb_log=False):
             img1 = sample['img'].to(device, dtype=torch.float).unsqueeze(1)
             if subj_list_postfix == 'C_single':
                 label = sample['age'].to(device, dtype=torch.float)
-                mean_age = sample['mean_age'].to(device, dtype=torch.float)
-                std_age = sample['std_age'].to(device, dtype=torch.float)
             else:
                 label = sample['label'].to(device, dtype=torch.float)
-                mean_age = None
-                std_age = None
+
             # run model
             pred, _ = model.forward_single(img1)
 
-            loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix, task)
+            loss_cls, pred_sig = model.compute_classification_loss(pred, label, torch.tensor(pos_weight), dataset_name, subj_list_postfix)
             loss = loss_cls
 
             loss_all_dict['cls'] += loss_cls.item()
@@ -431,10 +413,9 @@ def evaluate(phase='val', set='val', save_res=True, info='', wandb_log=False):
 
         pred_list = np.concatenate(pred_list, axis=0)
         label_list = np.concatenate(label_list, axis=0)
-        stats = compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix, task, std_age, mean_age)
-        loss_all_dict['r2'] = stats['r2']
-        loss_all_dict['mae'] = stats['mae']
-        loss_all_dict['mse'] = stats['mse']
+        stats = compute_classification_metrics(label_list, pred_list, dataset_name, subj_list_postfix)
+        loss_all_dict['bacc'] = stats['bacc']
+        loss_all_dict['f1'] = stats['f1']
 
         if phase == 'test' and save_res:
             img1_list = np.concatenate(img1_list, axis=0)
@@ -446,17 +427,43 @@ def evaluate(phase='val', set='val', save_res=True, info='', wandb_log=False):
     if wandb_log:
         wandb.log({
             f"{phase}_loss": loss_all_dict['cls'], 
-            f"{phase}_r2": loss_all_dict['r2'],
-            f"{phase}_mse": loss_all_dict['mse'], 
-            f"{phase}mae": loss_all_dict['mae']}
+            f"{phase}_bacc": loss_all_dict['bacc'],
+            f"{phase}_f1": loss_all_dict['f1']}
         )
 
     return loss_all_dict
 
+def rotate_batch(img1, batch_size, rot_mat):
+    #print(img1[0, :, :, :])
+    #print("Mean:", torch.mean(img1[0, :, :, :]))
+    #print("Min:", torch.min(img1[0, :, :, :]))
+    #print("Max:", torch.max(img1[0, :, :, :]))
+    #medutils.visualization.show(img1[0, :, :, :].cpu().numpy())
+    #plt.show()
+
+    img1 = img1.requires_grad_(True)
+    rotated_volumes = []
+    for i in range(min(img1.shape[0], batch_size)):
+        volume = img1[i]
+        # add normalization of rotated volume to linear transform into same range
+        if normalize_rotation: 
+            rotated_volumes.append(normalize_volume(volume, rotate_volume(volume, rot_mat, device, mode='trilinear')))
+        else:
+            rotated_volumes.append(rotate_volume(volume, rot_mat, device, mode='trilinear'))
+        
+    img2 = torch.stack(rotated_volumes).to(device, dtype=torch.float)
+
+    #print(img2[0, :, :, :])
+    #print("Mean:", torch.mean(img2[0, :, :, :]))
+    #print("Min:", torch.min(img2[0, :, :, :]))
+    #print("Max:", torch.max(img2[0, :, :, :]))
+    #sys.exit()
+    return img2
+
 if phase == 'train':
     train()
     [model], start_epoch = load_checkpoint_by_key([model], ckpt_path, ['model'], device)
-    stat = evaluate(phase='test', set='test', save_res=True, info='batch', wandb_log=True)
+    stat = evaluate(phase='test', set='test', save_res=True, wandb_log=True)
 else:
     stat = evaluate(phase='test', set='test', save_res=True, wandb_log=False)
     print(stat)
